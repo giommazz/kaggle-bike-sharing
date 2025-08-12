@@ -17,4 +17,14 @@ pip install -r requirements.txt                                  # install proje
 
 ## Data
 The notebook automatically downloads the required `day.csv` file from its source.  
-No manual data download required, simply run the notebook from start to finish in Colab or locally (data will be fetched during execution).
+No manual data download required, simply run the notebook from start to finish, in Colab or locally (data will be fetched during execution).
+
+## Usage
+### Run in Google Colab
+Click the **Open in Colab** badge at the top of this README (no local setup required).
+### Run locally
+1. Complete the [Setup](#setup) steps.
+2. Launch Jupyter Notebook:
+   ```bash
+   jupyter notebook bike-sharing-solution-day.ipynb
+   ```
