@@ -5,9 +5,7 @@ Kaggle bike-sharing competition solution using day.csv dataset (Colab notebook)
 
 
 ## Setup
-
 Requires Python 3.10+.
-
 ```bash
 git clone https://github.com/giommazz/kaggle-bike-sharing.git
 cd kaggle-bike-sharing                                           # navigate into project dir
@@ -15,3 +13,8 @@ python3.10 -m venv .venv                                         # create virtua
 source .venv/bin/activate                                        # activate virtual environment
 pip install --upgrade pip                                        # ensure pip is upgraded inside isolated environment
 pip install -r requirements.txt                                  # install project dependencies from 'requirements.txt'
+
+
+## Data
+The notebook automatically downloads the required `day.csv` file from its source.  
+No manual data download required, simply run the notebook from start to finish in Colab or locally (data will be fetched during execution).
