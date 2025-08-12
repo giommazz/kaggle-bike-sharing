@@ -1,9 +1,6 @@
 # Kaggle bike sharing
 Kaggle bike-sharing competition solution using day.csv dataset (Colab notebook)
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/giommazz/kaggle-bike-sharing/blob/main/bike-sharing-solution-day.ipynb)
-
-
 
 ## Setup
 Requires Python 3.10+.
@@ -22,7 +19,7 @@ No manual data download required, simply run the notebook from start to finish, 
 
 ## Usage
 ### Run in Google Colab
-Click the **Open in Colab** badge at the top of this README (no local setup required).
+Click the **Open in Colab** badge at the top of the notebook (no local setup required).
 ### Run locally
 1. Complete the [Setup](#setup) steps.
 2. Launch Jupyter Notebook:
