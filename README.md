@@ -9,9 +9,8 @@ Kaggle bike-sharing competition solution using day.csv dataset (Colab notebook)
 Requires Python 3.10+.
 
 ```bash
-cd <repo>
-python3.10 -m venv .venv
-source .venv/bin/activate      # macOS/Linux
-# .venv\Scripts\activate       # Windows
-pip install --upgrade pip
-pip install -r requirements.txt
+cd <repo>                          # navigate into project directory (after cloning/downloading)
+python3.10 -m venv .venv           # create virtual environment '.venv' using Python 3.10
+source .venv/bin/activate          # activate virtual environment
+pip install --upgrade pip          # upgrade pip inside isolated environment
+pip install -r requirements.txt    # install dependencies from 'requirements.txt'
