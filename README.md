@@ -1,6 +1,8 @@
 # Kaggle bike sharing
 Kaggle bike-sharing competition solution using day.csv dataset (Colab notebook)
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/giommazz/kaggle-bike-sharing/blob/main/bike%E2%80%91sharing%E2%80%91solution-day.ipynb)
+
 
 ## Setup
 Requires Python 3.10+.
