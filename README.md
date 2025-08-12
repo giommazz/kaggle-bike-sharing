@@ -13,7 +13,7 @@ python3.10 -m venv .venv                                         # create virtua
 source .venv/bin/activate                                        # activate virtual environment
 pip install --upgrade pip                                        # ensure pip is upgraded inside isolated environment
 pip install -r requirements.txt                                  # install project dependencies from 'requirements.txt'
-
+```
 
 ## Data
 The notebook automatically downloads the required `day.csv` file from its source.  
