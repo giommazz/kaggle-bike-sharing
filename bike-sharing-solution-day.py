@@ -65,7 +65,7 @@ import inspect
 """
 
 ##########################################
-# 2.1)  Perform all needed steps to load and clean the data. Please comment the major steps of your code.
+# 2.1)  Perform all needed steps to load and clean data. Please comment the major steps of your code.
 ##########################################
 # 2.1.1) Read raw data
 day_df = pd.read_csv('data/day.csv')
