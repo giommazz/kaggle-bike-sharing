@@ -5,14 +5,14 @@ Kaggle bike-sharing competition solution using the `day.csv` dataset (Colab note
 
 
 ## Setup
-Requires Python 3.10+.
+Requires Python 3.13+.
 ```bash
 git clone https://github.com/giommazz/kaggle-bike-sharing.git
 cd kaggle-bike-sharing                                           # navigate into project dir
-python3.10 -m venv .venv                                         # create virtual environment '.venv' using Python 3.10
-source .venv/bin/activate                                        # activate virtual environment
-pip install --upgrade pip                                        # ensure pip is upgraded inside isolated environment
-pip install -r requirements.txt                                  # install project dependencies from 'requirements.txt'
+python -m venv kaggle-bike-env                                   # create virtual environment '.venv' using Python 3.10
+source kaggle-bike-env/bin/activate                              # activate virtual environment
+python -m pip install --upgrade pip                              # ensure pip is upgraded inside isolated environment
+python -m pip install -r requirements.txt                        # install project dependencies from 'requirements.txt'
 ```
 
 ## Data

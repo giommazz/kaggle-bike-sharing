@@ -200,7 +200,7 @@ sns.barplot(
     order = dow_order, # keep calendar order
     hue='day_of_week',
     dodge=False, # avoid side-by-side bars
-    legend=False, # no legend needed since x-axis already labels
+    # legend=False, # no legend needed since x-axis already labels
     palette = sns.color_palette("colorblind", 7)
 )
 plt.xlabel('Day of the week')
