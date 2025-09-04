@@ -137,7 +137,7 @@ celerybeat.pid
 # Environments
 .env
 .envrc
-.venv
+kaggle-bike-env/
 env/
 venv/
 ENV/
