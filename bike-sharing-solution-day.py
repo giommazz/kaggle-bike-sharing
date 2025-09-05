@@ -44,9 +44,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.model_selection import BaseCrossValidator, cross_val_score, TimeSeriesSplit
-from sklearn.metrics import root_mean_squared_log_error, mean_squared_log_error, make_scorer
+from sklearn.metrics import mean_squared_log_error, make_scorer
 from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
@@ -513,9 +513,8 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
 
         # 2) One-hot encode weather
         weather_ohe = self.ohe.transform(X_[self.weather_cols_])
-        # Fetch colnames that the fitted OHE will output for the encoded weather feature
-        ohe_names = self.ohe.get_feature_names_out(self.weather_cols_)
         X_.drop(columns=self.weather_cols_, inplace=True) # Drop og column, not needed anymore
+        # Fetch colnames that the fitted OHE will output for the encoded weather feature
         X_[self.ohe.get_feature_names_out(self.weather_cols_)] = weather_ohe # add one-hot matrix to `X_`
 
         # 3) Cyclic calendar features
@@ -554,6 +553,37 @@ def eval_pipeline(pipe, X, y, cv):
         scoring = rmsle_scorer # 'neg_root_mean_squared_log_error' # returns -RMSLE
         )
     return -scores.mean()
+
+def eval_pipeline_recursive(pipe, X, y, cv):
+    """
+    Evaluate a pipeline that contains AR features (`BikeFeatureEngineer`) without label leakage.
+    Performs walk-forward prediction inside each test fold, seeding with training tail, never reads test labels.
+    """
+    scores = []
+    for tr_idx, te_idx in cv.split(X):
+        X_tr, y_tr = X.iloc[tr_idx], y.iloc[tr_idx]
+        X_te, y_te = X.iloc[te_idx], y.iloc[te_idx]
+
+        est = clone(pipe).fit(X_tr, y_tr)
+        if 'fe' not in est.named_steps:
+            raise ValueError("eval_pipeline_recursive requires a 'fe' step (BikeFeatureEngineer).")
+        fe = est.named_steps['fe']
+        model = est.named_steps['model']  # may be TransformedTargetRegressor
+
+        preds = []
+        # grow the test prefix one day at a time, feeding previous predictions via 'cnt'
+        for k in range(len(X_te)):
+            te_prefix = X_te.iloc[:k+1].copy()
+            # previous predictions for the first k days, NaN for the current day
+            cnt_proxy = pd.Series(preds + [np.nan], index=te_prefix.index, dtype='float64')
+            te_prefix['cnt'] = cnt_proxy.values
+
+            Z_last = fe.transform(te_prefix).iloc[[-1]] # engineered features for current day
+            y_hat = model.predict(Z_last).item() # extract scalar to avoid NumPy 1.25 warning
+            preds.append(float(y_hat)) # keep preds as Python floats
+
+        scores.append(_rmsle(y_te, pd.Series(preds, index=y_te.index)))
+    return float(np.mean(scores))
 
 """#### About baselines
 I decided to use two "autoregressive" baselines.
@@ -600,19 +630,18 @@ def baseline_scores(y, splitter, window=7):
 
     return float(np.mean(lag_scores)), float(np.mean(roll_scores))
 
-# Instantiate the two splitters
+# Instantiate splitters
 cv_last30 = Last30DaysSplit()
-# GUBI
-cv_timeseries = make_tss(add_lag1=True, add_roll7=True, n_splits=5, test_size=30)
+cv_ts_ar  = make_tss(add_lag1=True,  add_roll7=True,  n_splits=5, test_size=30)
+cv_ts_no  = make_tss(add_lag1=False, add_roll7=False, n_splits=5, test_size=30)
 
-
-# Evaluate autoregressive baselines on the same splitters as for RF, below
-lag1_30, roll7_30   = baseline_scores(y, cv_last30, )
-lag1_2010, roll7_2010 = baseline_scores(y, cv_20_10)
-print(f'Last-30 split baseline 1-day lag, RMSLE : {lag1_30:.6f}')
-print(f'Last-30 split baseline rolling 7-day median, RMSLE : {roll7_30:.6f}')
-print(f'20-10 split baseline rolling 7-day median, RMSLE : {lag1_2010:.6f}')
-print(f'20-10 split baseline rolling 7-day median, RMSLE : {roll7_2010:.6f}')
+# Evaluate autoregressive baselines
+lag1_30, roll7_30 = baseline_scores(y, cv_last30, window=7)
+lag1_ts, roll7_ts = baseline_scores(y, cv_ts_ar,  window=7)
+print(f'Last-30 split baseline (lag-1), RMSLE : {lag1_30:.6f}')
+print(f'Last-30 split baseline (roll-7), RMSLE : {roll7_30:.6f}')
+print(f'Time-series split baseline (lag-1), RMSLE : {lag1_ts:.6f}')
+print(f'Time-series split baseline (roll-7), RMSLE : {roll7_ts:.6f}')
 print()
 
 ##########################################
@@ -656,13 +685,15 @@ pipe_logtransf = Pipeline([
 ])
 rmsle_last30_raw = eval_pipeline(pipe_raw, X, y, cv_last30)
 rmsle_last30_log = eval_pipeline(pipe_logtransf, X, y, cv_last30)
-rmsle_20_10_raw = eval_pipeline(pipe_raw, X, y, cv_20_10)
-rmsle_20_10_log = eval_pipeline(pipe_logtransf, X, y, cv_20_10)
+rmsle_ts_raw = eval_pipeline(pipe_raw, X, y, cv_ts_no)
+rmsle_ts_log = eval_pipeline(pipe_logtransf, X, y, cv_ts_no)
 print(f"Last30 split, RMSLE raw : {rmsle_last30_raw:.6f}")
 print(f"Last30 split, RMSLE log : {rmsle_last30_log:.6f}")
-print(f"20-10 split,  RMSLE raw : {rmsle_20_10_raw:.6f}")
-print(f"20-10 split,  RMSLE log : {rmsle_20_10_log:.6f}")
+print(f"Time-series split, RMSLE raw : {rmsle_ts_raw:.6f}")
+print(f"Time-series split, RMSLE log : {rmsle_ts_log:.6f}")
 print()
+
+
 
 ##########################################
 # 3.2.8) Evaluate our pipeline with feature engineering but without autoregressive features
@@ -683,13 +714,14 @@ pipe_fe_logtransf = Pipeline([
 ])
 rmsle_fe_last30_raw = eval_pipeline(pipe_fe_raw, X, y, cv_last30)
 rmsle_fe_last30_log = eval_pipeline(pipe_fe_logtransf, X, y, cv_last30)
-rmsle_fe_20_10_raw = eval_pipeline(pipe_fe_raw, X, y, cv_20_10)
-rmsle_fe_20_10_log = eval_pipeline(pipe_fe_logtransf, X, y, cv_20_10)
-print(f"Last30 split + FE (no AR), RMSLE raw : {rmsle_fe_last30_raw:.6f}")
-print(f"Last30 split + FE (no AR), RMSLE log : {rmsle_fe_last30_log:.6f}")
-print(f"20-10 split + FE (no AR),  RMSLE raw : {rmsle_fe_20_10_raw:.6f}")
-print(f"20-10 split + FE (no AR),  RMSLE log : {rmsle_fe_20_10_log:.6f}")
+rmsle_fe_ts_raw = eval_pipeline(pipe_fe_raw, X, y, cv_ts_no)
+rmsle_fe_ts_log = eval_pipeline(pipe_fe_logtransf, X, y, cv_ts_no)
+print(f"Last30 + FE (no AR), RMSLE raw : {rmsle_fe_last30_raw:.6f}")
+print(f"Last30 + FE (no AR), RMSLE log : {rmsle_fe_last30_log:.6f}")
+print(f"Time-series + FE (no AR), RMSLE raw : {rmsle_fe_ts_raw:.6f}")
+print(f"Time-series + FE (no AR), RMSLE log : {rmsle_fe_ts_log:.6f}")
 print()
+
 
 ##########################################
 # 3.2.9) Evaluate our pipeline with feature engineering including autoregressive features
@@ -708,15 +740,18 @@ pipe_fe_ar_logtransf = Pipeline([
         func         = np.log1p,
         inverse_func = np.expm1))
 ])
-rmsle_fe_ar_last30_raw = eval_pipeline(pipe_fe_ar_raw, X, y, cv_last30)
-rmsle_fe_ar_last30_log = eval_pipeline(pipe_fe_ar_logtransf, X, y, cv_last30)
-rmsle_fe_ar_20_10_raw = eval_pipeline(pipe_fe_ar_raw, X, y, cv_20_10)
-rmsle_fe_ar_20_10_log = eval_pipeline(pipe_fe_ar_logtransf, X, y, cv_20_10)
-print(f"Last30 split + FE (with AR), RMSLE raw : {rmsle_fe_ar_last30_raw:.6f}")
-print(f"Last30 split + FE (with AR), RMSLE log : {rmsle_fe_ar_last30_log:.6f}")
-print(f"20-10 split + FE (with AR),  RMSLE raw : {rmsle_fe_ar_20_10_raw:.6f}")
-print(f"20-10 split + FE (with AR),  RMSLE log : {rmsle_fe_ar_20_10_log:.6f}")
+rmsle_fe_ar_last30_raw = eval_pipeline_recursive(pipe_fe_ar_raw, X, y, cv_last30)
+rmsle_fe_ar_last30_log = eval_pipeline_recursive(pipe_fe_ar_logtransf, X, y, cv_last30)
+rmsle_fe_ar_ts_raw = eval_pipeline_recursive(pipe_fe_ar_raw, X, y, cv_ts_ar)
+rmsle_fe_ar_ts_log = eval_pipeline_recursive(pipe_fe_ar_logtransf, X, y, cv_ts_ar)
+print(f"Last30 + FE (with AR), RMSLE raw : {rmsle_fe_ar_last30_raw:.6f}")
+print(f"Last30 + FE (with AR), RMSLE log : {rmsle_fe_ar_last30_log:.6f}")
+print(f"TS + FE (with AR), RMSLE raw : {rmsle_fe_ar_ts_raw:.6f}")
+print(f"TS + FE (with AR), RMSLE log : {rmsle_fe_ar_ts_log:.6f}")
 print()
+
+
+
 
 """# Potential improvements
 -   Hyperparameter tuning of the RF
