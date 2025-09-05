@@ -45,12 +45,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.model_selection import BaseCrossValidator, cross_val_score
-from sklearn.metrics import root_mean_squared_log_error
+from sklearn.model_selection import BaseCrossValidator, cross_val_score, TimeSeriesSplit
+from sklearn.metrics import root_mean_squared_log_error, mean_squared_log_error, make_scorer
 from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 import inspect
+from collections import deque
 
 """## Part 2 - Data Processing and Analysis
 
@@ -402,35 +403,21 @@ I decided not to use a random split, inasmuch as it would leak future info
 ##########################################
 # 3.2) Build a demand prediction model with Random Forest, preferably making use of following python libraries: scikit-learn.
 
+
+##########################################
+# 3.2.0) Scorer
+def _rmsle(y_true, y_pred):
+    return np.sqrt(mean_squared_log_error(y_true, y_pred))
+rmsle_scorer = make_scorer(_rmsle, greater_is_better=False)
+
+
 ##########################################
 # 3.2.1) Custom splitters
-class Month20tr10teSplit(BaseCrossValidator):
-    """
-        Custom split: train on first 20 days of each month, test on the rest.
-        Inherits from `BaseCrossValidator`, must reimplement `get_n_splits()` and `split()`.
-    """
-    # just one (`1`) big, global train/test split
-    def get_n_splits(self, X=None, y=None, groups=None):
-        return 1
-
-    # Produce exactly 1 (train_indices, test_indices) pair, since `get_n_splits()` returns 1
-    def split(self, X, y=None, groups=None):
-        idx = X.index # Grab DatetimeIndex (set earlier) and store it into `idx`
-        train_idx, test_idx = [], []
-
-        # One loop per calendar month
-        #   -   `idx.to_period('M')` turns every timestamp into its month, say 2011-04
-        #   -   `.unique()` lists each month once --> loop runs 24 times (two years)
-        for month in idx.to_period('M').unique():
-            month_mask = idx.to_period('M') == month # select current month data
-            # Select row numbers for current month, by accessing 1st element of `np.where` result tuple (row position where mask is true)
-            days = np.where(month_mask)[0]
-            # Append all calendar rows at once
-            train_idx.extend(days[:20])
-            test_idx.extend(days[20:])
-
-        # Return generator for sklearn (must be np arrays)
-        yield np.array(train_idx), np.array(test_idx)
+def make_tss(add_lag1: bool, add_roll7: bool, n_splits=5, test_size=30):
+    # When using lags (AR features), "gap >= max lookback" is needed to avoid leakage from train rows immediately adjacent to test    
+    # Set `gap = 0` if no AR features. Otherwise `gap = max(1 if add_lag1 else 0, 7 if add_roll7 else 0)`
+    gap = max(1 if add_lag1 else 0, 7 if add_roll7 else 0)
+    return TimeSeriesSplit(n_splits=n_splits, test_size=test_size, gap=gap)
 
 class Last30DaysSplit(BaseCrossValidator): # "Sixt" split
     """
@@ -494,14 +481,34 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         X_ = X.copy() # Don't alter og data
         self.ohe.fit(X_[self.weather_cols_]) # learn OHE variable mapping
+        self.cnt_median_ = X_['cnt'].median()
+        self._last_seen_train_time_ = X_.index.max()
+        self._carry_ = X_['cnt'].tail(7).to_numpy()
         return self
 
+    def _build_ar(self, X):
+        # training transform: no prepend
+        lag1  = X['cnt'].shift(1)
+        # After `shift(1)`, row-0 becomes NaN (no "yesterday" is available for day 0)
+        # `min_periods=1` returns a statistic even when the window is not full
+        roll7 = X['cnt'].shift(1).rolling(7, min_periods=1).median()
+        return lag1.fillna(self.cnt_median_), roll7.fillna(self.cnt_median_)
+    
+    def _build_ar_with_carry(self, X):
+        # test transform: prepend last 7 training counts
+        series = pd.Series(np.r_[self._carry_, X['cnt'].to_numpy()], index=None)
+        off = len(self._carry_)
+        lag1  = series.shift(1)
+        roll7 = series.shift(1).rolling(7, min_periods=1).median()
+        return (lag1.iloc[off:].fillna(self.cnt_median_).to_numpy(),
+                roll7.iloc[off:].fillna(self.cnt_median_).to_numpy())
+    
     # Feature engineering
     def transform(self, X):
         X_ = X.copy()
 
         # 1) Drop highly-correlated `atemp`
-        if 'atemp' in X_.columns:
+        if 'atemp' in X_.columns: 
             X_ = X_.drop(columns='atemp')
 
         # 2) One-hot encode weather
@@ -509,7 +516,7 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
         # Fetch colnames that the fitted OHE will output for the encoded weather feature
         ohe_names = self.ohe.get_feature_names_out(self.weather_cols_)
         X_.drop(columns=self.weather_cols_, inplace=True) # Drop og column, not needed anymore
-        X_[ohe_names] = weather_ohe # add one-hot matrix to `X_`
+        X_[self.ohe.get_feature_names_out(self.weather_cols_)] = weather_ohe # add one-hot matrix to `X_`
 
         # 3) Cyclic calendar features
         X_['mnth_sin'] = np.sin(2*np.pi*X_['mnth'] / 12)
@@ -518,16 +525,19 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
         X_['season_cos'] = np.cos(2*np.pi*X_['season'] / 4)
         X_['weekday_sin'] = np.sin(2*np.pi*X_['weekday']/ 7)
         X_['weekday_cos'] = np.cos(2*np.pi*X_['weekday']/ 7)
-        X_ = X_.drop(columns=['mnth', 'season', 'weekday'])
+        X_.drop(columns=['mnth', 'season', 'weekday'], inplace=True)
 
         # 4) Autoregressive features
-        if self.add_lag1:
-            # After `shift(1)`, row-0 becomes NaN (no "yesterday" is available for day 0).
-            # --> `bfill()` back-fills those NaN values: copies the next available value (day 1) upward
-            # `min_periods=1` returns a statistic even when the window is not full
-            X_['cnt_lag1'] = X_['cnt'].shift(1).bfill()
-        if self.add_roll7:
-            X_['cnt_roll7'] = (X_['cnt'].shift(1).rolling(7, min_periods=1).median().bfill())
+        if self.add_lag1 or self.add_roll7:
+            use_carry = X.index.min() > self._last_seen_train_time_ # decide train vs test by time
+            if use_carry:
+                lag1, roll7 = self._build_ar_with_carry(X)
+            else:
+                lag1, roll7 = self._build_ar(X)
+            if self.add_lag1:
+                X_['cnt_lag1']  = lag1
+            if self.add_roll7:
+                X_['cnt_roll7'] = roll7
 
         # Drop current-day `cnt` to avoid leakage
         if 'cnt' in X_.columns:
@@ -541,13 +551,9 @@ def eval_pipeline(pipe, X, y, cv):
         pipe, # Clone pipeline/estimator
         X, y, # Data
         cv = cv, # Splitting procedure
-        scoring = 'neg_root_mean_squared_log_error' # returns -RMSLE
+        scoring = rmsle_scorer # 'neg_root_mean_squared_log_error' # returns -RMSLE
         )
     return -scores.mean()
-
-# Instantiate the two splitters
-cv_20_10  = Month20tr10teSplit()
-cv_last30 = Last30DaysSplit()
 
 """#### About baselines
 I decided to use two "autoregressive" baselines.
@@ -557,25 +563,51 @@ Rationale: this is what we would do if we could not use ML. We would use past da
 
 ##########################################
 # 3.2.5) Simple autoregressive baseline
-def baseline_scores(y, splitter):
+def baseline_scores(y, splitter, window=7):
     """
-        Return RMSLE for two autoregressive baselines on the test indices generated by `splitter`.
+    Return RMSLE for two autoregressive baselines on the test indices generated by `splitter`:
+      - lag-1: predict yesterday's *prediction* (not true label) in test
+      - roll-7: predict median of last `window` (predictions/observations available up to that day)
+    Both are seeded with the last training observations and never read test labels
     """
-    for _, test_idx in splitter.split(X): # only one split
-        y_test = y.iloc[test_idx]
+    lag_scores, roll_scores = [], []
+    y = y.copy()
 
-        # 1-day lag predictor: "use yesterday's data to allocate bikes"
-        y_pred_lag1 = y.shift(1).iloc[test_idx]
-        rmsle_lag1  = root_mean_squared_log_error(y_test, y_pred_lag1)
+    for tr_idx, te_idx in splitter.split(y.to_frame()):
+        tr_idx = np.asarray(tr_idx); te_idx = np.asarray(te_idx)
+        y_tr = y.iloc[tr_idx]; y_te = y.iloc[te_idx]
 
-        # 7-day rolling median predictor: "use median of rolling past week data to allocate bikes"
-        y_pred_roll7 = (y.shift(1).rolling(7, min_periods=1).median()).iloc[test_idx]
-        rmsle_roll7  = root_mean_squared_log_error(y_test, y_pred_roll7)
+        # Seed buffers from training tail
+        buf_lag  = deque(y_tr.tail(1).tolist(), maxlen=window) # last obs only
+        buf_roll = deque(y_tr.tail(window).tolist(), maxlen=window) # last `win` obs
 
-    return rmsle_lag1, rmsle_roll7
+        preds_lag, preds_roll = [], []
+
+        # Walk forward chronologically in the test block
+        for _ in te_idx:
+            # 1-day lag baseline: yesterday = last element of buf_lag
+            p_lag = float(buf_lag[-1])
+            preds_lag.append(p_lag)
+            buf_lag.append(p_lag)        # recursive update with prediction
+
+            # 7-day rolling median baseline
+            p_roll = float(np.median(buf_roll))
+            preds_roll.append(p_roll)
+            buf_roll.append(p_roll)      # recursive update with prediction
+
+        lag_scores.append(_rmsle(y_te, pd.Series(preds_lag, index=y_te.index)))
+        roll_scores.append(_rmsle(y_te, pd.Series(preds_roll, index=y_te.index)))
+
+    return float(np.mean(lag_scores)), float(np.mean(roll_scores))
+
+# Instantiate the two splitters
+cv_last30 = Last30DaysSplit()
+# GUBI
+cv_timeseries = make_tss(add_lag1=True, add_roll7=True, n_splits=5, test_size=30)
+
 
 # Evaluate autoregressive baselines on the same splitters as for RF, below
-lag1_30, roll7_30   = baseline_scores(y, cv_last30)
+lag1_30, roll7_30   = baseline_scores(y, cv_last30, )
 lag1_2010, roll7_2010 = baseline_scores(y, cv_20_10)
 print(f'Last-30 split baseline 1-day lag, RMSLE : {lag1_30:.6f}')
 print(f'Last-30 split baseline rolling 7-day median, RMSLE : {roll7_30:.6f}')
