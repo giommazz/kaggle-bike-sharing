@@ -132,7 +132,7 @@ print()
 # 2.1.4) Outlier detection
 def iqr_mask(pd_series, pval_low, pval_high, coeff):
     """
-        Return a Boolean mask that flags Tukey outliers (typically values outside [Q1 - c*IQR, Q3 + c*IQR]).
+    Return a Boolean mask that flags Tukey outliers (typically values outside [Q1 - c*IQR, Q3 + c*IQR]).
     """
     assert pval_low < pval_high, "`pval_low` should be smaller than `pval_hihg`"
     perc_low, perc_high = np.percentile(pd_series, [pval_low, pval_high])
@@ -421,8 +421,7 @@ I used sklearn's Pipelines used, so in the cells below I define some helper func
 3. fit a predictor, then evaluates it on a test set $\to$ see `eval_pipeline`
 
 #### About splits
-I decided to not only use the "Sixt" split, considering only the last month as a test set, but also an additional split using the first 20 days of all months as the training set, and the rest as the test set. Scores obtained by evaluating the predictor in the first case could be "just lucky", and in fact they tend to be slightly better (see below, smaller error).
-I decided not to use a random split, inasmuch as it would leak future info
+I use two splits: one with last 30 days as test set, and another with a time series split to avoid data leakage. I avoid random splits to prevent leaking future info.
 """
 
 ##########################################
@@ -432,22 +431,47 @@ I decided not to use a random split, inasmuch as it would leak future info
 ##########################################
 # 3.2.0) Scorer
 def _rmsle(y_true, y_pred):
+    """
+    Compute root mean squared log error (RMSLE) between `y_true` and `y_pred`.
+    """
+    # Compute RMSLE using sklearn's `mean_squared_log_error`
     return np.sqrt(mean_squared_log_error(y_true, y_pred))
+
+# Create `rmsle_scorer` for use in sklearn model evaluation (`False` because lower is better)
 rmsle_scorer = make_scorer(_rmsle, greater_is_better=False)
 
 
 ##########################################
 # 3.2.1) Custom splitters
-def make_tss(add_lag1: bool, add_roll7: bool, n_splits=5, test_size=30):
-    # When using lags (AR features), "gap >= max lookback" is needed to avoid leakage from train rows immediately adjacent to test    
-    # Set `gap = 0` if no AR features. Otherwise `gap = max(1 if add_lag1 else 0, 7 if add_roll7 else 0)`
+def make_timeseries_split(add_lag1: bool, add_roll7: bool, n_splits=5, test_size=30):
+    """
+    Create `TimeSeriesSplit` with correct `gap` to prevent data leakage when using autoregressive features.
+    -> keeps order of data, splits train/test sets sequentially to avoid data leakage from future to past
+
+    # Example: with n_samples=100, n_splits=3, test_size=10, gap=7
+    # Split 1: train [0 ... 65], gap [66 ... 72], test [73 ... 82]
+    # Split 2: train [0 ... 75], gap [76 ... 82], test [83 ... 92]
+    # Split 3: train [0 ... 85], gap [86 ... 92], test [93 ... 99]
+
+    Input:
+    - `add_lag1`: bool, whether to add 1-day lag feature
+    - `add_roll7`: bool, whether to add 7-day rolling feature
+    - `n_splits`: int, number of splits (default 5)
+    - `test_size`: int, size of test set for each split (default 30)
+
+    Output:
+    - `TimeSeriesSplit` object with correct `gap` parameter
+    """
+    # Compute `gap` as largest window needed for AR features: 1 for `add_lag1`, 7 for `add_roll7`, 0 if no AR features
+    # `gap` ensures that, for each test split, at least `gap` rows before test set are excluded from training
+    # This prevents training on rows that would be used to compute AR features for the test set
     gap = max(1 if add_lag1 else 0, 7 if add_roll7 else 0)
     return TimeSeriesSplit(n_splits=n_splits, test_size=test_size, gap=gap)
 
-class Last30DaysSplit(BaseCrossValidator): # "Sixt" split
+class Last30DaysSplit(BaseCrossValidator):
     """
-        Single split: train on rows [0 ... N-31], test on rows [N-30 ... N-1].
-        Assumes X,y are already time-ordered from oldest to newest.
+    Single split: train on rows [0 ... N-31], test on rows [N-30 ... N-1].
+    Assumes `X`,`y` are already time-ordered from oldest to newest.
     """
 
     # Determine number of many pairs `split()` yields
@@ -477,7 +501,9 @@ preprocess = ColumnTransformer([('keep_all', 'passthrough', feat_cols)], remaind
 # 3.2.3) Feature engineering
 # Helper for one-hot encoding, implements `pd.get_dummies(..., drop_first=True)` and handles compatibility issues
 def onehot_no_sparse():
-    """Return `OneHotEncoder` with dense output, compatible with all sklearn versions."""
+    """
+    Return `OneHotEncoder` with dense output, compatible with all sklearn versions.
+    """
     # Grab signature of sklearn's `OneHotEncoder` constructor and pull its
     #   arguments, to check if newer `sparse_output` parameter exists
     params = inspect.signature(OneHotEncoder).parameters
@@ -488,13 +514,13 @@ def onehot_no_sparse():
 
 class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
     """
-        Feature engineering class, inherits from `BaseEstimator`, `TransformerMixin`:
-        -   drops 'atemp'
-        -   one-hot encodes 'weathersit' (drops first binary column)
-        -   adds sin/cos transformation pairs for month, season, weekday. Then drops ogs
-        -   creates 1-day lag and rolling 7-day median from past data + drops `cnt`
+    Feature engineering class, inherits from `BaseEstimator`, `TransformerMixin`:
+    - drops 'atemp'
+    - one-hot encodes 'weathersit' (drops first binary column)
+    - adds sin/cos transformation pairs for month, season, weekday. Then drops ogs
+    - creates 1-day lag and rolling 7-day median from past data + drops `cnt`
 
-        Works with/returns a Pandas DataFrame, so column names survive
+    Works with/returns a Pandas DataFrame, so column names survive
     """
     def __init__(self, add_lag1=True, add_roll7=True):
         self.ohe = onehot_no_sparse() # Set up a `OneHotEncoder`
@@ -502,31 +528,56 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
         self.add_lag1 = add_lag1
         self.add_roll7 = add_roll7
 
-    # Nothing to learn except one-hot encoder
+    # Use only training data, nothing to learn except one-hot encoder
     def fit(self, X, y=None):
         X_ = X.copy() # Don't alter og data
         self.ohe.fit(X_[self.weather_cols_]) # learn OHE variable mapping
-        self.cnt_median_ = X_['cnt'].median()
-        self._last_seen_train_time_ = X_.index.max()
-        self._carry_ = X_['cnt'].tail(7).to_numpy()
+        self.cnt_median_ = X_['cnt'].median() # compute median of `cnt` from training data for use in `fillna()`
+        self._last_seen_train_time_ = X_.index.max()  # Store last timestamp seen in training (`DatetimeIndex` value)
+        self._carry_ = X_['cnt'].tail(7).to_numpy()   # Store last 7 `cnt` values for use in test-time AR features
         return self
 
     def _build_ar(self, X):
-        # training transform: no prepend
-        lag1  = X['cnt'].shift(1)
-        # After `shift(1)`, row-0 becomes NaN (no "yesterday" is available for day 0)
-        # `min_periods=1` returns a statistic even when the window is not full
+        """
+        Build autoregressive features for training data.
+
+        Input:
+        - `X`: DataFrame with `cnt` column
+
+        Output:
+        - `lag1`: Series with previous day's `cnt`
+        - `roll7`: Series with 7-day rolling median of `cnt`
+        """
+        # Compute lag-1 feature (previous day's `cnt`)
+        lag1 = X['cnt'].shift(1)
+        # Compute rolling 7-day median (excluding current day)
         roll7 = X['cnt'].shift(1).rolling(7, min_periods=1).median()
+        # Replace missing values with median to handle NaNs from `shift()` and `rolling()`
         return lag1.fillna(self.cnt_median_), roll7.fillna(self.cnt_median_)
-    
+
     def _build_ar_with_carry(self, X):
-        # test transform: prepend last 7 training counts
+        """
+            Build autoregressive features for test data using carryover from training.
+
+            Input:
+            - `X`: DataFrame with `cnt` column
+
+            Output:
+            - `lag1`: Numpy array with previous day's `cnt` (using carryover)
+            - `roll7`: Numpy array with 7-day rolling median of `cnt` (using carryover)
+        """
+        # Combine last 7 training `cnt` values with test data `cnt` values
+        # `np.r_` concatenates arrays: join `self._carry_` (last 7 train `cnt`) and `X['cnt']` (test `cnt`)
+        # This ensures lag/rolling features for test set use correct previous values from training
         series = pd.Series(np.r_[self._carry_, X['cnt'].to_numpy()], index=None)
         off = len(self._carry_)
-        lag1  = series.shift(1)
+        lag1 = series.shift(1)
         roll7 = series.shift(1).rolling(7, min_periods=1).median()
-        return (lag1.iloc[off:].fillna(self.cnt_median_).to_numpy(),
-                roll7.iloc[off:].fillna(self.cnt_median_).to_numpy())
+        # Only return features for test set rows, not prepended training values
+        return (
+            lag1.iloc[off:].fillna(self.cnt_median_).to_numpy(),
+            roll7.iloc[off:].fillna(self.cnt_median_).to_numpy()
+        )
     
     # Feature engineering
     def transform(self, X):
@@ -553,11 +604,12 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
 
         # 4) Autoregressive features
         if self.add_lag1 or self.add_roll7:
-            use_carry = X.index.min() > self._last_seen_train_time_ # decide train vs test by time
-            if use_carry:
-                lag1, roll7 = self._build_ar_with_carry(X)
-            else:
-                lag1, roll7 = self._build_ar(X)
+            # Set `use_carry` True if processing test data (all indices after last train time)
+            use_carry = X.index.min() > self._last_seen_train_time_
+            if use_carry: # test data
+                lag1, roll7 = self._build_ar_with_carry(X) # use carryover from training
+            else: # train data
+                lag1, roll7 = self._build_ar(X) # use median from training
             if self.add_lag1:
                 X_['cnt_lag1']  = lag1
             if self.add_roll7:
@@ -575,39 +627,62 @@ def eval_pipeline(pipe, X, y, cv):
         pipe, # Clone pipeline/estimator
         X, y, # Data
         cv = cv, # Splitting procedure
-        scoring = rmsle_scorer # 'neg_root_mean_squared_log_error' # returns -RMSLE
+        scoring = rmsle_scorer # returns -RMSLE (lower is better)
         )
     return -scores.mean()
 
-def eval_pipeline_recursive(pipe, X, y, cv):
+def eval_pipeline_walkforward(pipe, X, y, cv):
     """
-    Evaluate a pipeline that contains AR features (`BikeFeatureEngineer`) without label leakage.
-    Performs walk-forward prediction inside each test fold, seeding with training tail, never reads test labels.
+    Evaluate pipeline with AR features in a recursive, walk-forward manner.
+
+    - Builds test-day AR features using previous test-day predictions, not true labels. This: 
+      a) mirrors deployment (true future `cnt` unknown
+      b) prevents look-ahead leakage when computing features (using labels would yield overly optimistic scores)
+    - Initializes test-time AR features using last training `cnt` values (`self._carry_`)
+
+    Input:
+    - `pipe`: sklearn `Pipeline` with a `fe` step (`BikeFeatureEngineer`) and a `model` step
+    - `X`: DataFrame of features including `cnt` used only to construct AR features
+    - `y`: Series of labels aligned with `X`
+    - `cv`: splitter yielding train/test indices in time order
+
+    Output:
+    - `float`: mean RMSLE across folds
     """
-    scores = []
+    scores = []  # Store RMSLE scores for each fold
     for tr_idx, te_idx in cv.split(X):
+        # Split data into train and test sets for current fold
         X_tr, y_tr = X.iloc[tr_idx], y.iloc[tr_idx]
         X_te, y_te = X.iloc[te_idx], y.iloc[te_idx]
 
-        est = clone(pipe).fit(X_tr, y_tr)
-        if 'fe' not in est.named_steps:
-            raise ValueError("eval_pipeline_recursive requires a 'fe' step (BikeFeatureEngineer).")
-        fe = est.named_steps['fe']
-        model = est.named_steps['model']  # may be TransformedTargetRegressor
+        # Clone pipeline and fit on training data
+        estimator = clone(pipe).fit(X_tr, y_tr)
 
-        preds = []
-        # grow the test prefix one day at a time, feeding previous predictions via 'cnt'
+        # Check that pipeline has `fe` step
+        if 'fe' not in estimator.named_steps:
+            raise ValueError("eval_pipeline_walkforward requires a 'fe' step (BikeFeatureEngineer).")
+        fe = estimator.named_steps['fe']  # `fe` is feature engineering step (`BikeFeatureEngineer`)
+        model = estimator.named_steps['model']  # `model` is final estimator (could be regressor or wrapper)
+
+        preds = []  # Store predictions for test set
+        # Walk forward through test set, one day at a time
         for k in range(len(X_te)):
-            te_prefix = X_te.iloc[:k+1].copy()
-            # previous predictions for the first k days, NaN for the current day
+            te_prefix = X_te.iloc[:k+1].copy()  # Indexed from 0 to k+1 of test set
+            # Replace true test labels in `te_prefix['cnt']` with previous predictions ("proxy" labels)
+            # Current day receives NaN, past days use predictions
+            # Rationale: at deployment we wouldn't have true future labels `cnt`, so we must use predictions to form `lag1`/`roll7`.
+            #   `BikeFeatureEngineer.transform` uses `te_prefix['cnt']` to build AR features and then DROPS it.
             cnt_proxy = pd.Series(preds + [np.nan], index=te_prefix.index, dtype='float64')
             te_prefix['cnt'] = cnt_proxy.values
 
-            Z_last = fe.transform(te_prefix).iloc[[-1]] # engineered features for current day
-            y_hat = model.predict(Z_last).item() # extract scalar to avoid NumPy 1.25 warning
-            preds.append(float(y_hat)) # keep preds as Python floats
+            # Transform features for current day. AR features built using predictions instead of true labels (unavailable in real scenarios) 
+            last_row_features = fe.transform(te_prefix).iloc[[-1]] # last row
+            y_hat = model.predict(last_row_features).item()  # Predict for current day, extract scalar
+            preds.append(float(y_hat))  # Store prediction as float
 
+        # Compute RMSLE for this fold and append to scores
         scores.append(_rmsle(y_te, pd.Series(preds, index=y_te.index)))
+    # Return mean RMSLE across all folds
     return float(np.mean(scores))
 
 """#### About baselines
@@ -618,51 +693,67 @@ Rationale: this is what we would do if we could not use ML. We would use past da
 
 ##########################################
 # 3.2.5) Simple autoregressive baseline
-def baseline_scores(y, splitter, window=7):
+def ar_baseline_scores(y, splitter, window=7):
     """
     Return RMSLE for two autoregressive baselines on the test indices generated by `splitter`:
-      - lag-1: predict yesterday's *prediction* (not true label) in test
-      - roll-7: predict median of last `window` (predictions/observations available up to that day)
-    Both are seeded with the last training observations and never read test labels
+      - `lag-1`: predict yesterday's *prediction* (not true label) in test
+      - `roll-7`: predict median of last `window` (predictions/observations available up to that day)
+    Baselines use last available training values to initialize prediction history; baselines never use test labels
+
+    Input:
+    - `y`: Series of labels
+    - `splitter`: cross-validation splitter yielding train/test indices
+    - `window`: window size for rolling median
+
+    Output:
+    - `float`: mean RMSLE for lag-1 baseline
+    - `float`: mean RMSLE for roll-7 baseline
     """
-    lag_scores, roll_scores = [], []
-    y = y.copy()
+    lag_scores, roll_scores = [], []  # Store RMSLE scores for lag-1 and roll-7 baselines
+    y = y.copy()  # Avoid modifying original `y`
 
     for tr_idx, te_idx in splitter.split(y.to_frame()):
-        tr_idx = np.asarray(tr_idx); te_idx = np.asarray(te_idx)
-        y_tr = y.iloc[tr_idx]; y_te = y.iloc[te_idx]
+        tr_idx = np.asarray(tr_idx)  # Convert `tr_idx` to numpy array
+        te_idx = np.asarray(te_idx)  # Convert `te_idx` to numpy array
+        y_tr = y.iloc[tr_idx]        # Get training labels for current split
+        y_te = y.iloc[te_idx]        # Get test labels for current split
 
-        # Seed buffers from training tail
-        buf_lag  = deque(y_tr.tail(1).tolist(), maxlen=window) # last obs only
-        buf_roll = deque(y_tr.tail(window).tolist(), maxlen=window) # last `win` obs
+        # Initialize buffer for lag-1 with last value from `y_tr` (simulate only knowing past)
+        # Use `deque` for efficient rolling window updates (append/pop from ends in O(1) time)
+        buf_lag  = deque(y_tr.tail(1).tolist(), maxlen=window)
+        # Initialize roll-7 buffer with last `window` values from `y_tr`
+        buf_roll = deque(y_tr.tail(window).tolist(), maxlen=window)
 
-        preds_lag, preds_roll = [], []
+        preds_lag, preds_roll = [], []  # Store predictions for each baseline
 
-        # Walk forward chronologically in the test block
+        # Walk forward through test indices, simulating prediction day by day
         for _ in te_idx:
-            # 1-day lag baseline: yesterday = last element of buf_lag
+            # Lag-1: prediction is last value in `buf_lag, i.e., previous day's prediction
             p_lag = float(buf_lag[-1])
             preds_lag.append(p_lag)
-            buf_lag.append(p_lag)        # recursive update with prediction
+            buf_lag.append(p_lag)  # Update buffer with prediction (recursive, always use previous prediction)
 
-            # 7-day rolling median baseline
+            # Roll-7: prediction is median of values in `buf_roll` (uses only predictions/observations up to that day)
             p_roll = float(np.median(buf_roll))
             preds_roll.append(p_roll)
-            buf_roll.append(p_roll)      # recursive update with prediction
+            buf_roll.append(p_roll)  # Update buffer with prediction (recursive)
 
+        # Compute RMSLE for lag-1 baseline for this split
         lag_scores.append(_rmsle(y_te, pd.Series(preds_lag, index=y_te.index)))
+        # Compute RMSLE for roll-7 baseline for this split
         roll_scores.append(_rmsle(y_te, pd.Series(preds_roll, index=y_te.index)))
 
+    # Return mean RMSLE for both baselines across all splits
     return float(np.mean(lag_scores)), float(np.mean(roll_scores))
 
 # Instantiate splitters
 cv_last30 = Last30DaysSplit()
-cv_ts_ar  = make_tss(add_lag1=True,  add_roll7=True,  n_splits=5, test_size=30)
-cv_ts_no  = make_tss(add_lag1=False, add_roll7=False, n_splits=5, test_size=30)
+cv_ts_ar  = make_timeseries_split(add_lag1=True,  add_roll7=True,  n_splits=5, test_size=30)
+cv_ts_no  = make_timeseries_split(add_lag1=False, add_roll7=False, n_splits=5, test_size=30)
 
 # Evaluate autoregressive baselines
-lag1_30, roll7_30 = baseline_scores(y, cv_last30, window=7)
-lag1_ts, roll7_ts = baseline_scores(y, cv_ts_ar,  window=7)
+lag1_30, roll7_30 = ar_baseline_scores(y, cv_last30, window=7)
+lag1_ts, roll7_ts = ar_baseline_scores(y, cv_ts_ar,  window=7)
 print(f'Last-30 split baseline (lag-1), RMSLE : {lag1_30:.6f}')
 print(f'Last-30 split baseline (roll-7), RMSLE : {roll7_30:.6f}')
 print(f'Time-series split baseline (lag-1), RMSLE : {lag1_ts:.6f}')
@@ -684,11 +775,11 @@ def make_model(name: str):
             max_iter=500,
             early_stopping=True,
             random_state=42)
-    if name == "gbr":  # NEW: classic Gradient Boosting
+    if name == "gbr":
         return GradientBoostingRegressor(
             learning_rate=0.05,
             n_estimators=500,
-            max_depth=3,           # via max_depth in base learners
+            max_depth=3,
             random_state=42)
     raise ValueError(f"Unknown model '{name}'")
 
@@ -783,7 +874,7 @@ pipe_rf_fe_raw = Pipeline([ # rf
     ('fe'  , BikeFeatureEngineer(add_lag1=False, add_roll7=False)),
     ('model', rf)
 ])
-pipe_fe_hgbr_raw = Pipeline([ # hgbr
+pipe_hgbr_fe_raw = Pipeline([ # hgbr
     ('fe'   , BikeFeatureEngineer(add_lag1=False, add_roll7=False)),
     ('model', hgbr)
 ])
@@ -816,9 +907,9 @@ rmsle_rf_fe_last30_raw = eval_pipeline(pipe_rf_fe_raw, X, y, cv_last30)
 rmsle_rf_fe_last30_log = eval_pipeline(pipe_rf_fe_logtransf, X, y, cv_last30)
 rmsle_rf_fe_ts_raw = eval_pipeline(pipe_rf_fe_raw, X, y, cv_ts_no)
 rmsle_rf_fe_ts_log = eval_pipeline(pipe_rf_fe_logtransf, X, y, cv_ts_no)
-rmsle_fe_hgbr_last30_raw = eval_pipeline(pipe_fe_hgbr_raw, X, y, cv_last30)
+rmsle_fe_hgbr_last30_raw = eval_pipeline(pipe_hgbr_fe_raw, X, y, cv_last30)
 rmsle_fe_hgbr_last30_log = eval_pipeline(pipe_fe_hgbr_logtransf, X, y, cv_last30)
-rmsle_fe_hgbr_ts_raw     = eval_pipeline(pipe_fe_hgbr_raw, X, y, cv_ts_no)
+rmsle_fe_hgbr_ts_raw     = eval_pipeline(pipe_hgbr_fe_raw, X, y, cv_ts_no)
 rmsle_fe_hgbr_ts_log     = eval_pipeline(pipe_fe_hgbr_logtransf, X, y, cv_ts_no)
 rmsle_gbr_fe_last30_raw = eval_pipeline(pipe_gbr_fe_raw, X, y, cv_last30)
 rmsle_gbr_fe_last30_log = eval_pipeline(pipe_gbr_fe_logtransf, X, y, cv_last30)
@@ -875,18 +966,18 @@ pipe_gbr_fe_ar_logtransf = Pipeline([ # gbr
     ('model', TransformedTargetRegressor(
         regressor=gbr, func=np.log1p, inverse_func=np.expm1))
 ])
-rmsle_rf_fe_ar_last30_raw = eval_pipeline_recursive(pipe_rf_fe_ar_raw, X, y, cv_last30)
-rmsle_rf_fe_ar_last30_log = eval_pipeline_recursive(pipe_rf_fe_ar_logtransf, X, y, cv_last30)
-rmsle_rf_fe_ar_ts_raw = eval_pipeline_recursive(pipe_rf_fe_ar_raw, X, y, cv_ts_ar)
-rmsle_rf_fe_ar_ts_log = eval_pipeline_recursive(pipe_rf_fe_ar_logtransf, X, y, cv_ts_ar)
-rmsle_fe_ar_hgbr_last30_raw = eval_pipeline_recursive(pipe_fe_ar_hgbr_raw, X, y, cv_last30)
-rmsle_fe_ar_hgbr_last30_log = eval_pipeline_recursive(pipe_fe_ar_hgbr_logtransf, X, y, cv_last30)
-rmsle_fe_ar_hgbr_ts_raw     = eval_pipeline_recursive(pipe_fe_ar_hgbr_raw, X, y, cv_ts_ar)
-rmsle_fe_ar_hgbr_ts_log     = eval_pipeline_recursive(pipe_fe_ar_hgbr_logtransf, X, y, cv_ts_ar)
-rmsle_gbr_fe_ar_last30_raw = eval_pipeline_recursive(pipe_gbr_fe_ar_raw, X, y, cv_last30)
-rmsle_gbr_fe_ar_last30_log = eval_pipeline_recursive(pipe_gbr_fe_ar_logtransf, X, y, cv_last30)
-rmsle_gbr_fe_ar_ts_raw     = eval_pipeline_recursive(pipe_gbr_fe_ar_raw, X, y, cv_ts_ar)
-rmsle_gbr_fe_ar_ts_log     = eval_pipeline_recursive(pipe_gbr_fe_ar_logtransf, X, y, cv_ts_ar)
+rmsle_rf_fe_ar_last30_raw = eval_pipeline_walkforward(pipe_rf_fe_ar_raw, X, y, cv_last30)
+rmsle_rf_fe_ar_last30_log = eval_pipeline_walkforward(pipe_rf_fe_ar_logtransf, X, y, cv_last30)
+rmsle_rf_fe_ar_ts_raw = eval_pipeline_walkforward(pipe_rf_fe_ar_raw, X, y, cv_ts_ar)
+rmsle_rf_fe_ar_ts_log = eval_pipeline_walkforward(pipe_rf_fe_ar_logtransf, X, y, cv_ts_ar)
+rmsle_fe_ar_hgbr_last30_raw = eval_pipeline_walkforward(pipe_fe_ar_hgbr_raw, X, y, cv_last30)
+rmsle_fe_ar_hgbr_last30_log = eval_pipeline_walkforward(pipe_fe_ar_hgbr_logtransf, X, y, cv_last30)
+rmsle_fe_ar_hgbr_ts_raw     = eval_pipeline_walkforward(pipe_fe_ar_hgbr_raw, X, y, cv_ts_ar)
+rmsle_fe_ar_hgbr_ts_log     = eval_pipeline_walkforward(pipe_fe_ar_hgbr_logtransf, X, y, cv_ts_ar)
+rmsle_gbr_fe_ar_last30_raw = eval_pipeline_walkforward(pipe_gbr_fe_ar_raw, X, y, cv_last30)
+rmsle_gbr_fe_ar_last30_log = eval_pipeline_walkforward(pipe_gbr_fe_ar_logtransf, X, y, cv_last30)
+rmsle_gbr_fe_ar_ts_raw     = eval_pipeline_walkforward(pipe_gbr_fe_ar_raw, X, y, cv_ts_ar)
+rmsle_gbr_fe_ar_ts_log     = eval_pipeline_walkforward(pipe_gbr_fe_ar_logtransf, X, y, cv_ts_ar)
 print(f"RF + FE (with AR), Last30 split, raw : {rmsle_rf_fe_ar_last30_raw:.6f}")
 print(f"RF + FE (with AR), Last30 split, log : {rmsle_rf_fe_ar_last30_log:.6f}")
 print(f"HGBRT + FE (with AR), Last30 split, raw : {rmsle_fe_ar_hgbr_last30_raw:.6f}")
