@@ -210,3 +210,4 @@ __marimo__/
 plots/ # ignore everything under plots/ (not the folder itself)
 plots/**
 !plots/.gitkeep # keep a placeholder so the folder stays in the repo
+catboost_info/
