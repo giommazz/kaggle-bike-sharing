@@ -137,7 +137,7 @@ celerybeat.pid
 # Environments
 .env
 .envrc
-.venv
+kaggle-bike-env/
 env/
 venv/
 ENV/
@@ -205,3 +205,8 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Generated plots: keep folder, ignore outputs
+plots/ # ignore everything under plots/ (not the folder itself)
+plots/**
+!plots/.gitkeep # keep a placeholder so the folder stays in the repo
