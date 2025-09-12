@@ -174,7 +174,10 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
         X_['season_cos'] = np.cos(2*np.pi*X_['season'] / 4)
         X_['weekday_sin'] = np.sin(2*np.pi*X_['weekday']/ 7)
         X_['weekday_cos'] = np.cos(2*np.pi*X_['weekday']/ 7)
-        X_.drop(columns=['mnth', 'season', 'weekday'], inplace=True)
+        if 'hr' in X_.columns:
+            X_['hr_sin'] = np.sin(2*np.pi*X_['hr'] / 24)
+            X_['hr_cos'] = np.cos(2*np.pi*X_['hr'] / 24)
+        X_.drop(columns=['mnth', 'season', 'weekday', 'hr'], inplace=True)
 
         # 4) Autoregressive features
         if self.add_lag1 or self.add_roll7:

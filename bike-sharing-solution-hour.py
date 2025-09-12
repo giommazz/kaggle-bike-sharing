@@ -61,7 +61,7 @@ from pathlib import Path
 from xgboost import XGBRegressor
 from catboost import CatBoostRegressor
 from lightgbm import LGBMRegressor
-FIGDIR = Path.cwd() / "plots_day" # save all figures under ./plots
+FIGDIR = Path.cwd() / "plots_hour" # save all figures under ./plots
 FIGDIR.mkdir(parents=True, exist_ok=True) # create the folder if missing
 
 
@@ -118,6 +118,7 @@ hour_df = hour_df.drop(columns=['instant', 'dteday', 'casual', 'registered'])
 print(f'Columns after dropping uninformative and leaky ones: {hour_df.columns}')
 print()
 # Statistics
+pd.set_option("display.max_columns", None) # show all columns
 print(hour_df.describe())
 print()
 
@@ -129,7 +130,7 @@ print()
 
 ##########################################
 # 2.1.4) Outlier detection (hourly)
-iqr_mask(hour_df['hum'], 25, 75, 1.5)
+iqr_mask(hour_df['hum'], 25, 75, 1.5, label="hum")
 # Replace impossible humidity zeros using previous/next hour.
 outlier_humidity_mask = hour_df['hum'] == 0  # mask to flag implausible 0.0 humidity
 hour_df.loc[outlier_humidity_mask, 'hum'] = np.nan  # set to NaN to mark as missing
@@ -143,6 +144,7 @@ print()
 # 2.2)  Visualize rentals of bikes per day
 ##########################################
 # 2.2.1) plot mean, rentals and rolling rentals (aggregate hourly -> daily)
+# `resample('D').sum()` is basically a groupby+sum but on DateTimeIndex data
 daily_cnt = hour_df['cnt'].resample('D').sum() # aggregate hourly counts into daily totals
 mean_cnt = daily_cnt.mean() # average daily rentals over the full period
 window = 30 # rolling window length in days
@@ -168,8 +170,6 @@ savefig_pdf("fig_daily_rentals", FIGDIR) # save to plots/fig_daily_rentals.pdf
 
 
 
-
-
 """### Remarks about the two cells below
 - The distribution is almost normal-like. However...
 - ...multimodality detected (3 peaks/clusters): potentially corresponding to 3 seasons? (maybe winter, summer, shoulder season);
@@ -178,30 +178,50 @@ savefig_pdf("fig_daily_rentals", FIGDIR) # save to plots/fig_daily_rentals.pdf
 """
 
 ##########################################
-# 2.2.2) Plot marginal distribution (histogram bars and related KDE) of `cnt`
-sns.histplot(hour_df['cnt'], bins=30, kde=True, kde_kws={'bw_adjust':0.7})
+# 2.2.2) Plot marginal distribution (histogram + KDE) of daily `cnt`
+# Use the daily totals computed earlier (daily_cnt)
+sns.histplot(daily_cnt, bins=30, kde=True, kde_kws={'bw_adjust': 0.7})
 plt.title('Distribution of Daily Bike Rentals')
 plt.xlabel('Daily rentals (cnt)')
 plt.ylabel('Frequency')
 plt.tight_layout()
 savefig_pdf("fig_hist_cnt", FIGDIR)
-# sns.pairplot(hour_df)
 ##########################################
-# 2.2.3) Plot marginal distribution (histogram bars and related KDE) of `cnt` *after* log-transform
-transformed = np.log1p(hour_df['cnt'])
-sns.histplot(transformed, bins=30, kde=True, kde_kws={'bw_adjust':0.7})
+# 2.2.3) Plot marginal distribution (histogram + KDE) of daily `cnt` after log-transform
+transformed = np.log1p(daily_cnt)
+sns.histplot(transformed, bins=30, kde=True, kde_kws={'bw_adjust': 0.7})
 plt.title('Distribution of Daily Bike Rentals (post log-transf.)')
 plt.xlabel('Daily rentals (cnt)')
 plt.ylabel('Frequency')
 plt.tight_layout()
 savefig_pdf("fig_hist_log_cnt", FIGDIR)
 
+
 ##########################################
 # 2.2.4) Outlier detection and elimination
-# traditional outlier range
-iqr_mask(hour_df['cnt'], 25, 75, 1.5)
-# loosened outlier range
-iqr_mask(hour_df['cnt'], 25, 75, 1.0)
+
+# Outliers, daily count (aggregate all hours in each day)
+iqr_mask(daily_cnt, 25, 75, 1.5, label="daily cnt") # traditional outlier range
+iqr_mask(daily_cnt, 25, 75, 1.0, label="daily cnt") # loosened outlier range
+print()
+
+# Outliers, hourly count (aggregate all data with same hour timestamp)
+# per-hour masks, then combine
+hour_masks = []
+for hour, hour_group in hour_df.groupby('hr'):
+    # Apply Tukey's IQR outlier flag *only within this hour's distribution*
+    # -> makes sense because 3AM demand should be very different from 6PM demand
+    mask = iqr_mask(hour_group['cnt'], 25, 75, 2 ,label=f'hr={hour}')
+    # Wrap Boolean mask in a Series aligned with the group's index
+    # -> ensures one can later merge masks across groups while preserving timestamps
+    hour_masks.append(pd.Series(mask, index=hour_group.index))
+
+# Concatenate all per-hour mask Series into one big Boolean Series
+# `reindex` to align with the original DataFrame (`hour_df`) -> ensures no lost rows
+#  fill missing values with `False` (not outliers)
+outliers_per_hour = pd.concat(hour_masks).reindex(hour_df.index).fillna(False)
+# adds outlie-flag column for hourly count
+hour_df['hr_cnt_outlier'] = outliers_per_hour.astype(int) # converts to 1 if hour-level outlier, else 0
 
 """### Remarks about the cell below
 It doesn't look like `weekday` should have a large predictive power, as a feature. Later, I tried removing it and training RFs without it. Since it improves the error, although very marginally, I decided to keep it
@@ -209,16 +229,16 @@ It doesn't look like `weekday` should have a large predictive power, as a featur
 
 ##########################################
 # 2.2.5) Visualize total bike rental count per weekday
-plot_day_df = hour_df.copy() # Add readable weekday column
-plot_day_df['day_of_week'] = plot_day_df.index.day_name()
+plot_daily_df = daily_cnt.to_frame('cnt').copy() # # Add readable weekday column with daily totals
+plot_daily_df['day_of_week'] = plot_daily_df.index.day_name()
 # Displayed names, ordered
 dow_order = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
 plt.figure(figsize=(10,5))
 sns.barplot(
-    data = plot_day_df,
+    data = plot_daily_df,
     x = 'day_of_week',
     y = 'cnt',
-    estimator = sum, # aggregate by sum of rentals
+    estimator = sum, # aggregate by sum of daily total rentals, across the period
     order = dow_order, # keep calendar order
     hue='day_of_week',
     dodge=False, # avoid side-by-side bars
@@ -235,14 +255,14 @@ savefig_pdf("fig_weekday_totals", FIGDIR)
 
 ##########################################
 # 2.2.6) Visualize total bike rental count per  month
-plot_day_df = hour_df.copy() # Add readable month column
-plot_day_df['month_name'] = plot_day_df.index.month_name()
+plot_month_df = daily_cnt.to_frame('cnt').copy() # Add readable month column with daily totals
+plot_month_df['month_name'] = plot_month_df.index.month_name()
 # Displayed names, ordered
 month_order = ['January','February','March','April','May','June',
                'July','August','September','October','November','December']
 plt.figure(figsize=(12,5))
 sns.barplot(
-    data=plot_day_df,
+    data=plot_month_df,
     x='month_name',
     y='cnt',
     estimator=sum, # aggregate by sum of rentals
@@ -252,7 +272,6 @@ sns.barplot(
     legend=False,
     palette=sns.color_palette("colorblind", 12)
 )
-
 plt.xlabel('Month')
 plt.ylabel('Total rentals (2011-2012)')
 plt.title('Bike-sharing demand by month (sum over two years)')
@@ -262,22 +281,26 @@ savefig_pdf("fig_month_totals", FIGDIR)
 
 
 ##########################################
-# 2.2.7) Visualize total bike rental count per season
-plot_day_df = hour_df.copy()
-season_map = {1: 'Spring', 2: 'Summer', 3: 'Fall', 4: 'Winter'} # Map numeric season codes to names
-plot_day_df['season_name'] = plot_day_df['season'].map(season_map)
-season_order = ['Spring', 'Summer', 'Fall', 'Winter'] # Displayed names, ordered
+# 2.2.7) Visualize total bike rental count per season (daily aggregation)
+season_map = {1: 'Spring', 2: 'Summer', 3: 'Fall', 4: 'Winter'}  # Map numeric season codes to names
+season_order = ['Spring', 'Summer', 'Fall', 'Winter']
+# Build daily dataframe with totals and season label (season is constant within a day)
+plot_season_df = daily_cnt.to_frame('cnt').join(
+    hour_df['season'].resample('D').max().to_frame('season')
+)
+plot_season_df['season_name'] = plot_season_df['season'].map(season_map)
+
 plt.figure(figsize=(8,5))
 sns.barplot(
-    data = plot_day_df,
-    x = 'season_name',
-    y = 'cnt',
-    estimator = sum,
-    order = season_order,
+    data=plot_season_df,
+    x='season_name',
+    y='cnt',
+    estimator=sum,  # sum daily totals across the period
+    order=season_order,
     hue='season_name',
     dodge=False,
     legend=False,
-    palette = sns.color_palette("colorblind", 4)
+    palette=sns.color_palette("colorblind", 4)
 )
 plt.xlabel('Season')
 plt.ylabel('Total rentals (2011-2012)')
@@ -285,12 +308,16 @@ plt.title('Bike-sharing demand by season (sum over two years)')
 plt.tight_layout()
 savefig_pdf("fig_season_totals", FIGDIR)
 
-
 ##########################################
 # 2.2.8) Exploring multimodality in `cnt`: visualize distplot (KDE) and histplot (histograms)
+# Aggregate hourly -> daily to keep consistency with "Daily rental" interpretation
+plot_season_df = daily_cnt.to_frame('cnt').join(
+    hour_df['season'].resample('D').max().to_frame('season')  # season is constant within a day
+)
+
 # KDE for each season (smoothed estimated histogram distro): basically show PDF for each season
 g = sns.displot(
-    data=hour_df.assign(season=hour_df['season'].map(season_map)),
+    data=plot_season_df.assign(season=plot_season_df['season'].map(season_map)),
     x='cnt',
     hue='season',
     kind='kde',
@@ -302,9 +329,10 @@ g = sns.displot(
 ).set(title='Daily rental distribution by season')
 g.savefig(FIGDIR / "fig_kde_by_season.pdf")  # FacetGrid has savefig
 plt.close(g.fig)
+
 # Histograms for each seasonal distribution
 g = sns.FacetGrid(
-        hour_df.assign(season=hour_df['season'].map(season_map)),
+        plot_season_df.assign(season=plot_season_df['season'].map(season_map)),
         col='season',
         col_wrap=2,
         height=3.2
@@ -313,6 +341,8 @@ g.map(sns.histplot, 'cnt', bins=20, color='steelblue')
 g.set_axis_labels('Daily rentals (cnt)', 'N. of days')
 g.savefig(FIGDIR / "fig_hist_by_season.pdf")
 plt.close(g.fig)
+
+
 
 r"""### Remarks about the cell below
 - `atemp` is so highly corr. with `temp` (0.99) that they are basically the same $\to$ drop
@@ -597,12 +627,15 @@ def make_model(name: str):
             random_state = 42)
     if name == "hgbr":
         return HistGradientBoostingRegressor(
+            loss="poisson", # good for counts, emphasizes relative errors
             learning_rate=0.05,
             max_iter=500,
             early_stopping=True,
             random_state=42)
     if name == "gbr":
         return GradientBoostingRegressor(
+            loss="huber", # smooth and robust to spikes/outliers
+            alpha=0.85, # outlier sensitivity (.85-.95 typical)
             learning_rate=0.05,
             n_estimators=500,
             max_depth=3,
