@@ -350,31 +350,39 @@ r"""### Remarks about the cell below
 """
 
 ##########################################
-# 2.2.9) Visualize correlation matrix
+# 2.2.9) Visualize correlation matrix (hourly features)
 print(hour_df.columns)
-corr = hour_df[['season', 'yr', 'mnth', 'holiday', 'weekday', 'workingday',
-       'weathersit', 'temp', 'atemp', 'hum', 'windspeed']].corr()
+# Include `hr` (hour-of-day) and any engineered flags (e.g., hourly outlier column)
+corr_cols = ['season', 'yr', 'mnth', 'hr', 'holiday', 'weekday', 'workingday',
+             'weathersit', 'temp', 'atemp', 'hum', 'windspeed']
+# Optionally include outlier flag column if present
+if 'hr_cnt_outlier' in hour_df.columns:
+    corr_cols.append('hr_cnt_outlier')
+
+corr = hour_df[corr_cols].corr()
 mask = np.array(corr)
 mask[np.tril_indices_from(mask)] = False
 fig, ax= plt.subplots()
 fig.set_size_inches(20,10)
 sns.heatmap(corr, mask=mask, vmax=.8, square=True, annot=True)
 plt.tight_layout()
-savefig_pdf("fig_corr_pre", FIGDIR, fig)
+savefig_pdf("fig_corr_pre_FE", FIGDIR, fig)
+
 
 ##########################################
 # 2.3)  Assume that each bike has exactly maximum 12 rentals per day
 # - Find the maximum number of bicycles nmax that was needed in any one day.
 # - Find the 95%-percentile of bicycles n95 that was needed in any one day.
 ##########################################
-# Compute the fleet size needed per day, assuming each bike is rented <=12 times daily (convert to int)
-hour_df['daily_fleet_size'] = np.ceil(hour_df['cnt'] / 12).astype(int)
+# Compute the fleet size needed per day from daily totals (hourly data aggregated to days).
+# Note: each bike can be rented ≤ 12 times per day.
+daily_fleet_size = np.ceil(daily_cnt / 12).astype(int)
 # Compute stats:
 #   - `nmax`: fleet size needed to cover demand on "busiest" day
-#   - `n95`: 95-th percentile fleet size on (smallest fleet inventory that would have covered 95% of days)
-nmax = hour_df['daily_fleet_size'].max()
-n95  = int(np.ceil(np.percentile(hour_df['daily_fleet_size'], 95)))
-n50  = int(np.ceil(np.percentile(hour_df['daily_fleet_size'], 50)))
+#   - `n95`: 95-th percentile fleet size (smallest fleet inventory covering 95% of days)
+nmax = int(daily_fleet_size.max())
+n95  = int(np.ceil(np.percentile(daily_fleet_size, 95)))
+n50  = int(np.ceil(np.percentile(daily_fleet_size, 50)))
 print(f"Number of bikes needed on busiest day (nmax): {nmax}")
 print(f"Smallest number of bikes to cover 95% of days (n95): {n95}")
 print()
@@ -383,15 +391,16 @@ print()
 # 2.4)  Visualize the distribution of the covered days depending on the number of available bicycles.
 #       E.g. `nmax` bicycles would cover 100% of days, `n95` covers 95%, etc.
 ##########################################
-# Build "coverage" curve. For every `daily_fleet_size` value k, compute proportion of days with demand <= k.
-# Basically, compute empirical CDF (in %): P("bikes needed" <= k)) in [0,1]
+# Build "coverage" curve using daily fleet size. For every value k, compute proportion of days with demand ≤ k.
+# Basically, compute empirical CDF (in %): P("bikes needed" ≤ k) ∈ [0, 100]
 coverage_df = (
-    hour_df['daily_fleet_size']
-    .value_counts() # for each `daily_fleet_size` value k, count n. of days which required exactly k bikes (Series, indexed by k)
-    .sort_index() # sort by bike count k (ascending)
-    .cumsum() # running cumulative sum, represents days where <= k bikes needed
-    / len(hour_df) * 100 # convert into percentage ~CDF
-    ).reset_index().rename(columns={'daily_fleet_size': 'k', 'count': 'emp_CDF'})
+    daily_fleet_size
+    .value_counts()  # for each k, count number of days that required exactly k bikes
+    .sort_index()    # sort by bike count k (ascending)
+    .cumsum()        # cumulative days where ≤ k bikes were needed
+    / len(daily_fleet_size) * 100  # convert into percentage ~CDF
+).reset_index()
+coverage_df.columns = ['k', 'emp_CDF']
 # Plot: needed fleet size `k` vs %of days covered `emp_CDF`
 plt.figure(figsize=(10, 6))
 # Empirical CDF is flat until a new value of k is attained, then jumps up:
@@ -404,11 +413,20 @@ plt.axvline(n95, linestyle='--', label=f'n95 = {n95}', color='#D55E00')
 plt.axvline(nmax, linestyle='--', label=f'nmax = {nmax}', color='#009E73')
 plt.xlabel('N. needed bicycles (k)')
 plt.ylabel('% of fully served days (demand ≤ k)')
-plt.title(f'Daily coverage for different bicycle fleet sizes k, over {len(hour_df)} days')
+plt.title(f'Daily coverage for different bicycle fleet sizes k, over {len(daily_fleet_size)} days')
 plt.grid(True, linestyle=':') # light dotted grid
 plt.legend()
 plt.tight_layout()
 savefig_pdf("fig_coverage_ecdf", FIGDIR)
+
+
+
+
+
+
+
+
+
 
 """## Part 3 - Building prediction models
 
@@ -421,10 +439,14 @@ savefig_pdf("fig_coverage_ecdf", FIGDIR)
 ##########################################
 # Data
 X = hour_df.copy(deep=True)
-X = hour_df.copy(deep=True).drop(columns=['daily_fleet_size'])
+# Drop helper columns if present (safe-guard if computed earlier)
+drop_cols = [c for c in ['daily_fleet_size'] if c in X.columns]
+if drop_cols:
+    X = X.drop(columns=drop_cols)
 y = X['cnt']
 print(f'Columns before any feature engineering: {X.columns.values}')
 print()
+
 
 r"""### 3.0) Feature engineering: log (Box-Cox) transform + revert
 -   **Compresses outliers**, reducing their relative importance $\to$ now big and small rental days (e.g. vv hot or vv cold days) are comparable on an "additive scale", and additive effects should be more easily"measured"/"estimated" by models than multiplicative effect. So, our trees will tolerate more error on these outliers while being more accurate on the bulk of data.
@@ -456,11 +478,6 @@ I use two splits: one with last 30 days as test set, and another with a time ser
 ##########################################
 # 3.2) Build a demand prediction model with Random Forest, preferably making use of following python libraries: scikit-learn.
 
-
-
-
-
-
 ##########################################
 # 3.2.2) NO Feature engineering
 # all columns but `cnt`
@@ -491,8 +508,8 @@ def eval_pipeline_walkforward(pipe, X, y, cv):
     """
     Evaluate pipeline with AR features in a recursive, walk-forward manner.
 
-    - Builds test-day AR features using previous test-day predictions, not true labels. This: 
-      a) mirrors deployment (true future `cnt` unknown
+    - Builds test-time AR features using previous test-step (hour) predictions, not true labels. This:
+      a) mirrors deployment (true future `cnt` unknown)
       b) prevents look-ahead leakage when computing features (using labels would yield overly optimistic scores)
     - Initializes test-time AR features using last training `cnt` values (`self._carry_`)
 
@@ -521,17 +538,17 @@ def eval_pipeline_walkforward(pipe, X, y, cv):
         model = estimator.named_steps['model']  # `model` is final estimator (could be regressor or wrapper)
 
         preds = []  # Store predictions for test set
-        # Walk forward through test set, one day at a time
+        # Walk forward through test set, one time-step (hour) at a time
         for k in range(len(X_te)):
             te_prefix = X_te.iloc[:k+1].copy()  # Indexed from 0 to k+1 of test set
             # Replace true test labels in `te_prefix['cnt']` with previous predictions ("proxy" labels)
-            # Current day receives NaN, past days use predictions
+            # Current hour receives NaN, past hours use predictions
             # Rationale: at deployment we wouldn't have true future labels `cnt`, so we must use predictions to form `lag1`/`roll7`.
             #   `BikeFeatureEngineer.transform` uses `te_prefix['cnt']` to build AR features and then DROPS it.
             cnt_proxy = pd.Series(preds + [np.nan], index=te_prefix.index, dtype='float64')
             te_prefix['cnt'] = cnt_proxy.values
 
-            # Transform features for current day. AR features built using predictions instead of true labels (unavailable in real scenarios) 
+            # Transform features for current hour. AR features built using predictions instead of true labels (unavailable in real scenarios)
             last_row_features = fe.transform(te_prefix).iloc[[-1]] # last row
             y_hat = model.predict(last_row_features).item()  # Predict for current day, extract scalar
             preds.append(float(y_hat))  # Store prediction as float
@@ -552,14 +569,14 @@ Rationale: this is what we would do if we could not use ML. We would use past da
 def ar_baseline_scores(y, splitter, window=7):
     """
     Return RMSLE for two autoregressive baselines on the test indices generated by `splitter`:
-      - `lag-1`: predict yesterday's *prediction* (not true label) in test
-      - `roll-7`: predict median of last `window` (predictions/observations available up to that day)
+      - `lag-1`: predict previous time-step's (hour's) prediction in test (not the true label)
+      - `roll-window`: predict median of last `window` steps/hours (predictions/observations available up to that time)
     Baselines use last available training values to initialize prediction history; baselines never use test labels
 
     Input:
     - `y`: Series of labels
     - `splitter`: cross-validation splitter yielding train/test indices
-    - `window`: window size for rolling median
+    - `window`: window size (in steps/hours) for the rolling median
 
     Output:
     - `float`: mean RMSLE for lag-1 baseline
@@ -582,14 +599,14 @@ def ar_baseline_scores(y, splitter, window=7):
 
         preds_lag, preds_roll = [], []  # Store predictions for each baseline
 
-        # Walk forward through test indices, simulating prediction day by day
+        # Walk forward through test indices, simulating prediction hour by hour
         for _ in te_idx:
-            # Lag-1: prediction is last value in `buf_lag, i.e., previous day's prediction
+            # Lag-1: prediction is last value in `buf_lag`, i.e., previous hour's prediction
             p_lag = float(buf_lag[-1])
             preds_lag.append(p_lag)
             buf_lag.append(p_lag)  # Update buffer with prediction (recursive, always use previous prediction)
 
-            # Roll-7: prediction is median of values in `buf_roll` (uses only predictions/observations up to that day)
+            # Roll-window: prediction is median of values in `buf_roll` (uses only predictions/observations up to that hour)
             p_roll = float(np.median(buf_roll))
             preds_roll.append(p_roll)
             buf_roll.append(p_roll)  # Update buffer with prediction (recursive)
