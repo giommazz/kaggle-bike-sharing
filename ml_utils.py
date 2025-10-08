@@ -4,12 +4,14 @@ import pandas as pd
 import inspect
 from sklearn.metrics import mean_squared_log_error, make_scorer
 from sklearn.model_selection import BaseCrossValidator, TimeSeriesSplit
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, FunctionTransformer
+from sklearn.compose import ColumnTransformer
 from sklearn.base import BaseEstimator, TransformerMixin
 
 
 ##########################################
-# Evaluation scorers
+# EVALUATION SCORERS
+##########################################
 def _rmsle(y_true, y_pred):
     """
     Compute root mean squared log error (RMSLE) between `y_true` and `y_pred`.
@@ -22,7 +24,8 @@ rmsle_scorer = make_scorer(_rmsle, greater_is_better=False)
 
 
 ##########################################
-# Custom splitters
+# CUSTOM SPLITTERS
+##########################################
 def make_timeseries_split(add_lag1: bool, add_roll7: bool, n_splits=5, test_size=30):
     """
     Create `TimeSeriesSplit` with correct `gap` to prevent data leakage when using autoregressive features.
@@ -47,7 +50,6 @@ def make_timeseries_split(add_lag1: bool, add_roll7: bool, n_splits=5, test_size
     # This prevents training on rows that would be used to compute AR features for the test set
     gap = max(1 if add_lag1 else 0, 7 if add_roll7 else 0)
     return TimeSeriesSplit(n_splits=n_splits, test_size=test_size, gap=gap)
-
 
 class First19DaysTrainSplit(BaseCrossValidator):
     """
@@ -105,7 +107,9 @@ class Last30DaysSplit(BaseCrossValidator):
 
 
 ##########################################
-# Feature engineering
+# FEATURE ENGINEERING engineering
+##########################################
+
 # Helper for one-hot encoding, implements `pd.get_dummies(..., drop_first=True)` and handles compatibility issues
 def onehot_no_sparse():
     """
@@ -118,7 +122,6 @@ def onehot_no_sparse():
         # Drop first value to avoid collinearity, sparse bc few values and small dataset
         return OneHotEncoder(drop='first', sparse_output=False, dtype=np.float32)
     return OneHotEncoder(drop='first', sparse=False, dtype=np.float32) # sklearn < 1.2
-
 
 class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
     """
@@ -230,3 +233,32 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
         if 'cnt' in X_.columns:
             X_.drop(columns='cnt', inplace=True)
         return X_
+
+
+##########################################
+# PREPROCESSING helpers (no feature engineering)
+##########################################
+def make_no_fe_preprocess(X, target_col='cnt'):
+    """
+    Build a passthrough preprocessor (no feature engineering): features are passed straight through
+        as-is using `ColumnTransformer`.    
+
+    Input:
+    - X: DataFrame to derive feature columns from
+    - target_col: column to exclude (default 'cnt')
+
+    Output:
+    - preprocess: ColumnTransformer that passes features through unchanged
+    - to_df: FunctionTransformer that wraps array output back into a DataFrame
+             with original feature names (handy for LightGBM to keep names)
+    - feat_cols: list of feature column names
+    """
+    feat_cols = [c for c in X.columns if c != target_col]  # all columns but `cnt`
+    preprocess = ColumnTransformer([('keep_all', 'passthrough', feat_cols)], remainder='drop')  # "Preprocess-only" block:  no FE
+    # Convert array output back to DataFrame with original `feat_cols` names
+    # -> only needed for `lightgbm` to preserve feature names and avoid warning
+    to_df = FunctionTransformer(
+        lambda A: pd.DataFrame(A, columns=feat_cols),
+        feature_names_out=lambda self, input_features=None: np.array(feat_cols),
+    )
+    return preprocess, to_df, feat_cols

@@ -3,7 +3,7 @@ import numpy as np
 
 def iqr_mask(pd_series, pval_low, pval_high, coeff, label=None):
     """
-    Return a Boolean mask that flags Tukey outliers (typically values outside [Q1 - c*IQR, Q3 + c*IQR]).
+    Return a Boolean mask that flags Tukey outliers (typically values outside [Q1 - coeff*IQR, Q3 + coeff*IQR]).
     """
     assert pval_low < pval_high, "`pval_low` should be smaller than `pval_hihg`"
     perc_low, perc_high = np.percentile(pd_series, [pval_low, pval_high])
