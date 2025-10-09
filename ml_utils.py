@@ -144,8 +144,8 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
         X_ = X.copy() # Don't alter og data
         self.ohe.fit(X_[self.weather_cols_]) # learn OHE variable mapping
         self.cnt_median_ = X_['cnt'].median() # compute median of `cnt` from training data for use in `fillna()`
-        self._last_seen_train_time_ = X_.index.max()  # Store last timestamp seen in training (`DatetimeIndex` value)
-        self._carry_ = X_['cnt'].tail(7).to_numpy()   # Store last 7 `cnt` values for use in test-time AR features
+        self._last_seen_train_time_ = X_.index.max() # Store last timestamp seen in training (`DatetimeIndex` value)
+        self._carry_ = X_['cnt'].tail(7).to_numpy() # Store last 7 `cnt` values for use in test-time AR features
         return self
 
     def _build_ar(self, X):
@@ -168,14 +168,14 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
 
     def _build_ar_with_carry(self, X):
         """
-            Build autoregressive features for test data using carryover from training.
+        Build autoregressive features for test data using carryover from training.
 
-            Input:
-            - `X`: DataFrame with `cnt` column
+        Input:
+        - `X`: DataFrame with `cnt` column
 
-            Output:
-            - `lag1`: Numpy array with previous day's `cnt` (using carryover)
-            - `roll7`: Numpy array with 7-day rolling median of `cnt` (using carryover)
+        Output:
+        - `lag1`: Numpy array with previous day's `cnt` (using carryover)
+        - `roll7`: Numpy array with 7-day rolling median of `cnt` (using carryover)
         """
         # Combine last 7 training `cnt` values with test data `cnt` values
         # `np.r_` concatenates arrays: join `self._carry_` (last 7 train `cnt`) and `X['cnt']` (test `cnt`)

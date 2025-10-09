@@ -33,7 +33,7 @@ def make_model(name: str) -> Any:
     if name == "hgbr":
         from sklearn.ensemble import HistGradientBoostingRegressor
         return HistGradientBoostingRegressor(
-            loss="poisson",  # good for counts, emphasizes relative errors
+            loss="poisson", # good for counts, emphasizes relative errors
             learning_rate=0.05,
             max_iter=500,
             early_stopping=True,
@@ -42,8 +42,8 @@ def make_model(name: str) -> Any:
     if name == "gbr":
         from sklearn.ensemble import GradientBoostingRegressor
         return GradientBoostingRegressor(
-            loss="huber",  # smooth and robust to spikes/outliers
-            alpha=0.85,     # outlier sensitivity (.85-.95 typical)
+            loss="huber", # smooth and robust to spikes/outliers
+            alpha=0.85, # outlier sensitivity (.85-.95 typical)
             learning_rate=0.05,
             n_estimators=500,
             max_depth=3,
@@ -77,14 +77,14 @@ def make_model(name: str) -> Any:
         return LGBMRegressor(
             n_estimators=800,
             learning_rate=0.05,
-            num_leaves=63,              # more leaf capacity
-            min_child_samples=10,       # allow smaller leaves
+            num_leaves=63, # more leaf capacity
+            min_child_samples=10, # allow smaller leaves
             max_depth=-1,
             subsample=0.8,
             colsample_bytree=0.8,
             objective='rmse',
-            force_col_wise=True,        # remove col/row test overhead message
-            verbosity=-1,               # silence LightGBM logs
+            force_col_wise=True, # remove col/row test overhead message
+            verbosity=-1, # silence LightGBM logs
             random_state=42,
         )
 
