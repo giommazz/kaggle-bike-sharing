@@ -21,32 +21,22 @@
 ##########################################
 import pandas as pd
 import numpy as np
-from collections import deque
 import matplotlib
 matplotlib.use('Agg')   # non-GUI backend, safe for headless scripts
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.ensemble import (
-    RandomForestRegressor,
-    HistGradientBoostingRegressor,
-    GradientBoostingRegressor,
-    )
 from sklearn.base import clone
-from sklearn.model_selection import cross_val_score
-from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
+from sklearn.compose import TransformedTargetRegressor
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import FunctionTransformer
 from sklearn.linear_model import LinearRegression
 from pathlib import Path
-from xgboost import XGBRegressor
-from catboost import CatBoostRegressor
-from lightgbm import LGBMRegressor
 FIGDIR = Path.cwd() / "plots_hour" # save all figures under ./plots
 FIGDIR.mkdir(parents=True, exist_ok=True) # create the folder if missing
 from utils import savefig_pdf
 from eda_utils import iqr_mask
-from ml_utils import _rmsle, rmsle_scorer, make_timeseries_split, \
-    make_no_fe_preprocess, Last30DaysSplit, BikeFeatureEngineer
+from ml_utils import make_timeseries_split, make_no_fe_preprocess, Last30DaysSplit, BikeFeatureEngineer
+from model_eval import eval_pipeline, eval_pipeline_walkforward, ar_baseline_scores
+from models import make_model
 
 
 
@@ -327,12 +317,6 @@ sns.heatmap(corr, mask=mask, vmax=.8, square=True, annot=True)
 plt.tight_layout()
 savefig_pdf("fig_corr_pre_FE", FIGDIR, fig)
 
-"""
-1. Define a test metric for predicting the daily demand for bike sharing, which you would like to use to measure the accuracy of the constructed models, and explain your choice.
-2. Build a demand prediction model with Random Forest, preferably making use of following python libraries: scikit-learn.
-3. Report the value of the chosen test metric on the provided data.
-"""
-
 ##########################################
 # PREDICTION MODELS
 ##########################################
@@ -348,161 +332,18 @@ y = X['cnt']
 print(f'Columns before any feature engineering: {X.columns.values}')
 print()
 
-
-
 ##########################################
-# PREDICTION MODELS
-
-##########################################
-# NO Feature engineering (FE)
 # Build the passthrough preprocessor (no FE) from helper
 preprocess, to_df, feat_cols = make_no_fe_preprocess(X, target_col='cnt')
 
-
 ##########################################
-# Model evaluation through pipeline
-def eval_pipeline(pipe, X, y, cv): 
-    """
-    Evaluate a pipeline via cross-validation using RMSLE.
-
-    Input:
-    - `pipe`: sklearn Pipeline/estimator to evaluate
-    - `X`: features (DataFrame or array-like)
-    - `y`: target values (Series/array-like)
-    - `cv`: cross-validator yielding train/test splits
-
-    Output:
-    - `float`: mean RMSLE across folds (>0)
-    """
-    scores = cross_val_score(
-        pipe, # Clone pipeline/estimator
-        X, y, # Data
-        cv = cv, # Splitting procedure
-        scoring = rmsle_scorer # returns -RMSLE (lower is better)
-        )
-    return -scores.mean()
-
-def eval_pipeline_walkforward(pipe, X, y, cv):
-    """
-    Evaluate pipeline with AR features in a recursive, walk-forward manner.
-
-    - Builds test-time AR features using previous test-step (hour) predictions, not true labels. This:
-      a) mirrors deployment (true future `cnt` unknown)
-      b) prevents look-ahead leakage when computing features (using labels would yield overly optimistic scores)
-    - Initializes test-time AR features using last training `cnt` values (`self._carry_`)
-
-    Input:
-    - `pipe`: sklearn `Pipeline` with a `fe` step (`BikeFeatureEngineer`) and a `model` step
-    - `X`: DataFrame of features including `cnt` used only to construct AR features
-    - `y`: Series of labels aligned with `X`
-    - `cv`: splitter yielding train/test indices in time order
-
-    Output:
-    - `float`: mean RMSLE across folds
-    """
-    scores = []  # Store RMSLE scores for each fold
-    for tr_idx, te_idx in cv.split(X):
-        # Split data into train and test sets for current fold
-        X_tr, y_tr = X.iloc[tr_idx], y.iloc[tr_idx]
-        X_te, y_te = X.iloc[te_idx], y.iloc[te_idx]
-
-        # Clone pipeline and fit on training data
-        estimator = clone(pipe).fit(X_tr, y_tr)
-
-        # Check that pipeline has `fe` step
-        if 'fe' not in estimator.named_steps:
-            raise ValueError("eval_pipeline_walkforward requires a 'fe' step (BikeFeatureEngineer).")
-        fe = estimator.named_steps['fe']  # `fe` is feature engineering step (`BikeFeatureEngineer`)
-        model = estimator.named_steps['model']  # `model` is final estimator (could be regressor or wrapper)
-
-        preds = []  # Store predictions for test set
-        # Walk forward through test set, one time-step (hour) at a time
-        for k in range(len(X_te)):
-            te_prefix = X_te.iloc[:k+1].copy()  # Indexed from 0 to k+1 of test set
-            # Replace true test labels in `te_prefix['cnt']` with previous predictions ("proxy" labels)
-            # Current hour receives NaN, past hours use predictions
-            # Rationale: at deployment we wouldn't have true future labels `cnt`, so we must use predictions to form `lag1`/`roll7`.
-            #   `BikeFeatureEngineer.transform` uses `te_prefix['cnt']` to build AR features and then DROPS it.
-            cnt_proxy = pd.Series(preds + [np.nan], index=te_prefix.index, dtype='float64')
-            te_prefix['cnt'] = cnt_proxy.values
-
-            # Transform features for current hour. AR features built using predictions instead of true labels (unavailable in real scenarios)
-            last_row_features = fe.transform(te_prefix).iloc[[-1]] # last row
-            y_hat = model.predict(last_row_features).item()  # Predict for current day, extract scalar
-            preds.append(float(y_hat))  # Store prediction as float
-
-        # Compute RMSLE for this fold and append to scores
-        scores.append(_rmsle(y_te, pd.Series(preds, index=y_te.index)))
-    # Return mean RMSLE across all folds
-    return float(np.mean(scores))
-
-"""#### About baselines
-I decided to use two "autoregressive" baselines.
-Rationale: this is what we would do if we could not use ML. We would use past data, either 1-day lag or 7-day rolling median.
-
-"""
-
-##########################################
-# 3.2.5) Simple autoregressive baseline
-def ar_baseline_scores(y, splitter, window=7):
-    """
-    Return RMSLE for two autoregressive baselines on the test indices generated by `splitter`:
-      - `lag-1`: predict previous time-step's (hour's) prediction in test (not the true label)
-      - `roll-window`: predict median of last `window` steps/hours (predictions/observations available up to that time)
-    Baselines use last available training values to initialize prediction history; baselines never use test labels
-
-    Input:
-    - `y`: Series of labels
-    - `splitter`: cross-validation splitter yielding train/test indices
-    - `window`: window size (in steps/hours) for the rolling median
-
-    Output:
-    - `float`: mean RMSLE for lag-1 baseline
-    - `float`: mean RMSLE for roll-7 baseline
-    """
-    lag_scores, roll_scores = [], []  # Store RMSLE scores for lag-1 and roll-7 baselines
-    y = y.copy()  # Avoid modifying original `y`
-
-    for tr_idx, te_idx in splitter.split(y.to_frame()):
-        tr_idx = np.asarray(tr_idx)  # Convert `tr_idx` to numpy array
-        te_idx = np.asarray(te_idx)  # Convert `te_idx` to numpy array
-        y_tr = y.iloc[tr_idx]        # Get training labels for current split
-        y_te = y.iloc[te_idx]        # Get test labels for current split
-
-        # Initialize buffer for lag-1 with last value from `y_tr` (simulate only knowing past)
-        # Use `deque` for efficient rolling window updates (append/pop from ends in O(1) time)
-        buf_lag  = deque(y_tr.tail(1).tolist(), maxlen=window)
-        # Initialize roll-7 buffer with last `window` values from `y_tr`
-        buf_roll = deque(y_tr.tail(window).tolist(), maxlen=window)
-
-        preds_lag, preds_roll = [], []  # Store predictions for each baseline
-
-        # Walk forward through test indices, simulating prediction hour by hour
-        for _ in te_idx:
-            # Lag-1: prediction is last value in `buf_lag`, i.e., previous hour's prediction
-            p_lag = float(buf_lag[-1])
-            preds_lag.append(p_lag)
-            buf_lag.append(p_lag)  # Update buffer with prediction (recursive, always use previous prediction)
-
-            # Roll-window: prediction is median of values in `buf_roll` (uses only predictions/observations up to that hour)
-            p_roll = float(np.median(buf_roll))
-            preds_roll.append(p_roll)
-            buf_roll.append(p_roll)  # Update buffer with prediction (recursive)
-
-        # Compute RMSLE for lag-1 baseline for this split
-        lag_scores.append(_rmsle(y_te, pd.Series(preds_lag, index=y_te.index)))
-        # Compute RMSLE for roll-7 baseline for this split
-        roll_scores.append(_rmsle(y_te, pd.Series(preds_roll, index=y_te.index)))
-
-    # Return mean RMSLE for both baselines across all splits
-    return float(np.mean(lag_scores)), float(np.mean(roll_scores))
-
 # Instantiate splitters
 cv_last30 = Last30DaysSplit()
 cv_ts_ar  = make_timeseries_split(add_lag1=True,  add_roll7=True,  n_splits=5, test_size=30)
 cv_ts_no  = make_timeseries_split(add_lag1=False, add_roll7=False, n_splits=5, test_size=30)
 
-# Evaluate autoregressive baselines
+##########################################
+# Autoregressive baselines
 lag1_30, roll7_30 = ar_baseline_scores(y, cv_last30, window=7)
 lag1_ts, roll7_ts = ar_baseline_scores(y, cv_ts_ar,  window=7)
 print(f'Last-30 split baseline (lag-1), RMSLE : {lag1_30:.6f}')
@@ -512,66 +353,7 @@ print(f'Time-series split baseline (roll-7), RMSLE : {roll7_ts:.6f}')
 print()
 
 ##########################################
-# 3.2.6) Our Base regressor and splitters
-def make_model(name: str):
-    if name == "rf":
-        return RandomForestRegressor(
-            n_estimators = 50,
-            min_samples_leaf = 2,
-            criterion = 'friedman_mse',
-            random_state = 42)
-    if name == "hgbr":
-        return HistGradientBoostingRegressor(
-            loss="poisson", # good for counts, emphasizes relative errors
-            learning_rate=0.05,
-            max_iter=500,
-            early_stopping=True,
-            random_state=42)
-    if name == "gbr":
-        return GradientBoostingRegressor(
-            loss="huber", # smooth and robust to spikes/outliers
-            alpha=0.85, # outlier sensitivity (.85-.95 typical)
-            learning_rate=0.05,
-            n_estimators=500,
-            max_depth=3,
-            random_state=42)
-    if name == "xgb":
-        return XGBRegressor(
-            n_estimators=500,
-            learning_rate=0.05,
-            max_depth=6,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective='reg:squarederror',
-            tree_method='hist',
-            random_state=42,
-            n_jobs=-1,
-        )
-    if name == "cbr":
-        return CatBoostRegressor(
-            iterations=800,
-            learning_rate=0.05,
-            depth=6,
-            loss_function='RMSE',
-            random_seed=42,
-            verbose=False,
-        )
-    if name == "lgbm":
-        return LGBMRegressor(
-            n_estimators=800,
-            learning_rate=0.05,
-            num_leaves=63,              # more leaf capacity
-            min_child_samples=10,       # allow smaller leaves (alias of min_data_in_leaf)
-            max_depth=-1,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective='rmse',
-            force_col_wise=True,        # remove col/row test overhead message
-            verbosity=-1,               # silence LightGBM logs
-            random_state=42,
-        )
-    raise ValueError(f"Unknown model '{name}'")
-
+# Our base regressors
 hgbr = make_model("hgbr")
 rf   = make_model("rf")
 gbr  = make_model("gbr")
@@ -579,24 +361,8 @@ xgb  = make_model("xgb")
 cbr  = make_model("cbr")
 lgbm = make_model("lgbm")
 
-r"""#### About test results (autoregressive baselines VS simple RF baseline)
-- `cv_last30` split: autocorrelation is strong and, in a sense, bike rental demand is persistent to the 1-day lag. In fact:
-  - the 1-day lag autoregressive baseline is good, actually better than our naive random forest with og-scaled target and no feature engineering. But already when we log-transform we are better than naive baseline, and then adding FE we improve even more.
-  - note that our RF is better on this split when autoregressive feature are used WRT no AR features
-- `cv_20_10` split: our RF is already better than the autoregressive baselines on this "more challenging split". Our calendar+weather RF improves once we stabilise variance (with log-target) and add basic feature engineering. Autoregressive features worsen the test scores. It would be interesting to perform experiments on a larger dataset
-- the log-transform (transform `y_train`, then backtransform `y_pred` before computing the RMSLE) always yields better test results
-
-#### Takeaways
-- `cv_last30`: our best model (with feature engineering including autoregressive features, and target log-transform) reduces the 1-day lag baseline error by about $18\%$, and the 7-day rolling median baseline by about $33\%$.
-- `cv_last30`: on this tougher split, our best model (with feature engineering not including autoregressive features, and target log-transform) reduces the 1-day lag baseline error by about $19\%$, and the 7-day rolling median baseline by about $14\%$.
-- **log-transform**: always produces improvements in test error: at least $2\%$ and as much $16\%$ WRT un-transformed target
-- **autoregressive features**: could be useful but to be verified with larger dataset
-"""
-
 ##########################################
-# 3.2.7) Evaluate our pipeline without feature engineering
-##########################################
-# Raw pipeline without log-transform
+# Evaluate our pipelines without FE and without log-transform
 pipe_rf_raw = Pipeline([ # rf
     ('prep' , preprocess),
     ('model', rf)
@@ -623,7 +389,7 @@ pipe_lgbm_raw = Pipeline([ # lightgbm
     ('model', lgbm)
 ])
 ##########################################
-# Pipeline with log-transform and back
+# Evaluate out pipelines without FE but with log-transform and back
 pipe_rf_logtransf = Pipeline([ # rf
     ('prep' , preprocess),
     ('model', TransformedTargetRegressor(

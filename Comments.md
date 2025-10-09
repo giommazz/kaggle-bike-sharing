@@ -61,5 +61,19 @@ I used sklearn's Pipelines, and called `Pipeline` objects in my `eval_pipeline` 
     - compute cyclical sin/cos transformation features
     - computes autoregressive features using past data withouth leaking info
 - fit a predictor, then evaluate it on a test set $\to$ see `eval_pipeline`
-"""
+
+
+## About model evaluation (autoregressive baselines VS simple RF baseline)
+- `cv_last30` split: autocorrelation is strong and, in a sense, bike rental demand is persistent to the 1-day lag. In fact:
+  - the 1-day lag autoregressive baseline is good, actually better than our naive random forest with og-scaled target and no feature engineering. But already when we log-transform we are better than naive baseline, and then adding FE we improve even more.
+  - note that our RF is better on this split when autoregressive feature are used WRT no AR features
+- `cv_20_10` split: our RF is already better than the autoregressive baselines on this "more challenging split". Our calendar+weather RF improves once we stabilise variance (with log-target) and add basic feature engineering. Autoregressive features worsen the test scores. It would be interesting to perform experiments on a larger dataset
+- the log-transform (transform `y_train`, then backtransform `y_pred` before computing the RMSLE) always yields better test results
+
+### Takeaways
+- `cv_last30`: our best model (with feature engineering including autoregressive features, and target log-transform) reduces the 1-day lag baseline error by about $18\%$, and the 7-day rolling median baseline by about $33\%$.
+- `cv_last30`: on this tougher split, our best model (with feature engineering not including autoregressive features, and target log-transform) reduces the 1-day lag baseline error by about $19\%$, and the 7-day rolling median baseline by about $14\%$.
+- **log-transform**: always produces improvements in test error: at least $2\%$ and as much $16\%$ WRT un-transformed target
+- **autoregressive features**: could be useful but to be verified with larger dataset
+
 
