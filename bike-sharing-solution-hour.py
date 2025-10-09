@@ -34,7 +34,7 @@ FIGDIR = Path.cwd() / "plots_hour" # save all figures under ./plots
 FIGDIR.mkdir(parents=True, exist_ok=True) # create the folder if missing
 from utils import savefig_pdf
 from eda_utils import iqr_mask
-from ml_utils import make_timeseries_split, make_no_fe_preprocess, Last30DaysSplit, BikeFeatureEngineer
+from ml_utils import make_timeseries_split, make_timeseries_split_with_gap, make_no_fe_preprocess, Last30DaysSplit, BikeFeatureEngineer
 from model_eval import eval_pipeline, eval_pipeline_walkforward, ar_baseline_scores
 from models import make_model
 
@@ -339,7 +339,9 @@ preprocess, to_df, feat_cols = make_no_fe_preprocess(X, target_col='cnt')
 ##########################################
 # Instantiate splitters
 cv_last30 = Last30DaysSplit()
-cv_ts_ar  = make_timeseries_split(add_lag1=True,  add_roll7=True,  n_splits=5, test_size=30)
+hourly_ar_lags = [1, 24, 168]
+hourly_ar_rolls = [24, 168]
+cv_ts_ar  = make_timeseries_split_with_gap(max_window_in_steps=max(max(hourly_ar_lags), max(hourly_ar_rolls)), n_splits=5, test_size=30)
 cv_ts_no  = make_timeseries_split(add_lag1=False, add_roll7=False, n_splits=5, test_size=30)
 
 ##########################################
@@ -600,62 +602,62 @@ print()
 ##########################################
 # Raw pipeline without log-transform, with FE (including autoregressive FE)
 pipe_rf_fe_ar_raw = Pipeline([ # rf
-    ('fe'  , BikeFeatureEngineer()),
+    ('fe'  , BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_roll_windows=hourly_ar_rolls)),
     ('model', rf)
 ])
 pipe_fe_ar_hgbr_raw = Pipeline([ # hgbr
-    ('fe'   , BikeFeatureEngineer()),
+    ('fe'   , BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_roll_windows=hourly_ar_rolls)),
     ('model', hgbr)
 ])
 pipe_gbr_fe_ar_raw = Pipeline([ # gbr
-    ('fe', BikeFeatureEngineer()),
+    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_roll_windows=hourly_ar_rolls)),
     ('model', gbr)
 ])
 pipe_xgb_fe_ar_raw = Pipeline([ # xgb
-    ('fe', BikeFeatureEngineer()),
+    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_roll_windows=hourly_ar_rolls)),
     ('model', xgb)
 ])
 pipe_cbr_fe_ar_raw = Pipeline([ # catboost
-    ('fe', BikeFeatureEngineer()),
+    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_roll_windows=hourly_ar_rolls)),
     ('model', cbr)
 ])
 pipe_lgbm_fe_ar_raw = Pipeline([ # lightgbm
-    ('fe', BikeFeatureEngineer()),
+    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_roll_windows=hourly_ar_rolls)),
     ('model', lgbm)
 ])
 ##########################################
 # Pipeline with log-transform and back, with FE (including autoregressive FE)
 pipe_rf_fe_ar_logtransf = Pipeline([ # rf
-    ('fe'  , BikeFeatureEngineer()),
+    ('fe'  , BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_roll_windows=hourly_ar_rolls)),
     ('model', TransformedTargetRegressor(
         regressor    = rf,
         func         = np.log1p,
         inverse_func = np.expm1))
 ])
 pipe_fe_ar_hgbr_logtransf = Pipeline([ # hgbr
-    ('fe'   , BikeFeatureEngineer()),
+    ('fe'   , BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_roll_windows=hourly_ar_rolls)),
     ('model', TransformedTargetRegressor(
         regressor    = hgbr,
         func         = np.log1p,
         inverse_func = np.expm1))
 ])
 pipe_gbr_fe_ar_logtransf = Pipeline([ # gbr
-    ('fe', BikeFeatureEngineer()),
+    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_roll_windows=hourly_ar_rolls)),
     ('model', TransformedTargetRegressor(
         regressor=gbr, func=np.log1p, inverse_func=np.expm1))
 ])
 pipe_xgb_fe_ar_logtransf = Pipeline([ # xgb
-    ('fe', BikeFeatureEngineer()),
+    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_roll_windows=hourly_ar_rolls)),
     ('model', TransformedTargetRegressor(
         regressor=xgb, func=np.log1p, inverse_func=np.expm1))
 ])
 pipe_cbr_fe_ar_logtransf = Pipeline([ # catboost
-    ('fe', BikeFeatureEngineer()),
+    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_roll_windows=hourly_ar_rolls)),
     ('model', TransformedTargetRegressor(
         regressor=cbr, func=np.log1p, inverse_func=np.expm1))
 ])
 pipe_lgbm_fe_ar_logtransf = Pipeline([ # lightgbm
-    ('fe', BikeFeatureEngineer()),
+    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_roll_windows=hourly_ar_rolls)),
     ('model', TransformedTargetRegressor(
         regressor=lgbm, func=np.log1p, inverse_func=np.expm1))
 ])
