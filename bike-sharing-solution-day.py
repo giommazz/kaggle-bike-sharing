@@ -45,11 +45,6 @@ import matplotlib
 matplotlib.use('Agg')   # non-GUI backend, safe for headless scripts
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.ensemble import (
-    RandomForestRegressor,
-    HistGradientBoostingRegressor,
-    GradientBoostingRegressor,
-    )
 from sklearn.base import clone
 from sklearn.compose import TransformedTargetRegressor
 from sklearn.pipeline import Pipeline
@@ -61,7 +56,7 @@ FIGDIR.mkdir(parents=True, exist_ok=True) # create the folder if missing
 
 from utils import savefig_pdf
 from eda_utils import iqr_mask
-from ml_utils import _rmsle, rmsle_scorer, make_timeseries_split, make_timeseries_split_with_gap, Last30DaysSplit, BikeFeatureEngineer, make_no_fe_preprocess
+from ml_utils import make_timeseries_split, Last30DaysSplit, BikeFeatureEngineer, make_no_fe_preprocess
 from model_eval import eval_pipeline, eval_pipeline_walkforward, ar_baseline_scores
 from models import make_model
 
@@ -425,8 +420,8 @@ preprocess, to_df, feat_cols = make_no_fe_preprocess(X, target_col='cnt')
 cv_last30 = Last30DaysSplit()
 daily_ar_lags = [1]
 daily_ar_rolls = [7, 14]
-cv_ts_ar  = make_timeseries_split_with_gap(max_window_in_steps=max(max(daily_ar_lags), max(daily_ar_rolls)), n_splits=5, test_size=30)
-cv_ts_no  = make_timeseries_split(add_lag1=False, add_roll7=False, n_splits=5, test_size=30)
+cv_ts_ar  = make_timeseries_split(n_splits=5, test_size=30, lags=daily_ar_lags, rolls=daily_ar_rolls)
+cv_ts_no  = make_timeseries_split(n_splits=5, test_size=30)
 
 # Evaluate autoregressive baselines
 lag1_30, roll7_30 = ar_baseline_scores(y, cv_last30, window=7)
@@ -589,62 +584,62 @@ print()
 ##########################################
 # Raw pipeline without log-transform, with FE (no autoregressive FE)
 pipe_rf_fe_raw = Pipeline([ # rf
-    ('fe'  , BikeFeatureEngineer(add_lag1=False, add_roll7=False)),
+    ('fe'  , BikeFeatureEngineer()),
     ('model', rf)
 ])
 pipe_hgbr_fe_raw = Pipeline([ # hgbr
-    ('fe'   , BikeFeatureEngineer(add_lag1=False, add_roll7=False)),
+    ('fe'   , BikeFeatureEngineer()),
     ('model', hgbr)
 ])
 pipe_gbr_fe_raw = Pipeline([ # gbr
-    ('fe', BikeFeatureEngineer(add_lag1=False, add_roll7=False)),
+    ('fe', BikeFeatureEngineer()),
     ('model', gbr)
 ])
 pipe_xgb_fe_raw = Pipeline([ # xgb
-    ('fe', BikeFeatureEngineer(add_lag1=False, add_roll7=False)),
+    ('fe', BikeFeatureEngineer()),
     ('model', xgb)
 ])
 pipe_cbr_fe_raw = Pipeline([ # catboost
-    ('fe', BikeFeatureEngineer(add_lag1=False, add_roll7=False)),
+    ('fe', BikeFeatureEngineer()),
     ('model', cbr)
 ])
 pipe_lgbm_fe_raw = Pipeline([ # lightgbm
-    ('fe', BikeFeatureEngineer(add_lag1=False, add_roll7=False)),
+    ('fe', BikeFeatureEngineer()),
     ('model', lgbm)
 ])
 ##########################################
 # Pipeline with log-transform and back, with FE (no autoregressive FE)
 pipe_rf_fe_logtransf = Pipeline([ # rf
-    ('fe'  , BikeFeatureEngineer(add_lag1=False, add_roll7=False)),
+    ('fe'  , BikeFeatureEngineer()),
     ('model', TransformedTargetRegressor(
         regressor    = rf,
         func         = np.log1p,
         inverse_func = np.expm1))
 ])
 pipe_fe_hgbr_logtransf = Pipeline([ # hgbr
-    ('fe'   , BikeFeatureEngineer(add_lag1=False, add_roll7=False)),
+    ('fe'   , BikeFeatureEngineer()),
     ('model', TransformedTargetRegressor(
         regressor    = hgbr,
         func         = np.log1p,
         inverse_func = np.expm1))
 ])
 pipe_gbr_fe_logtransf = Pipeline([
-    ('fe', BikeFeatureEngineer(add_lag1=False, add_roll7=False)),
+    ('fe', BikeFeatureEngineer()),
     ('model', TransformedTargetRegressor(
         regressor=gbr, func=np.log1p, inverse_func=np.expm1))
 ])
 pipe_xgb_fe_logtransf = Pipeline([
-    ('fe', BikeFeatureEngineer(add_lag1=False, add_roll7=False)),
+    ('fe', BikeFeatureEngineer()),
     ('model', TransformedTargetRegressor(
         regressor=xgb, func=np.log1p, inverse_func=np.expm1))
 ])
 pipe_cbr_fe_logtransf = Pipeline([
-    ('fe', BikeFeatureEngineer(add_lag1=False, add_roll7=False)),
+    ('fe', BikeFeatureEngineer()),
     ('model', TransformedTargetRegressor(
         regressor=cbr, func=np.log1p, inverse_func=np.expm1))
 ])
 pipe_lgbm_fe_logtransf = Pipeline([
-    ('fe', BikeFeatureEngineer(add_lag1=False, add_roll7=False)),
+    ('fe', BikeFeatureEngineer()),
     ('model', TransformedTargetRegressor(
         regressor=lgbm, func=np.log1p, inverse_func=np.expm1))
 ])
@@ -703,62 +698,62 @@ print()
 ##########################################
 # Raw pipeline without log-transform, with FE (including autoregressive FE)
 pipe_rf_fe_ar_raw = Pipeline([ # rf
-    ('fe'  , BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_roll_windows=daily_ar_rolls)),
+    ('fe'  , BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_rolls=daily_ar_rolls)),
     ('model', rf)
 ])
 pipe_fe_ar_hgbr_raw = Pipeline([ # hgbr
-    ('fe'   , BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_roll_windows=daily_ar_rolls)),
+    ('fe'   , BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_rolls=daily_ar_rolls)),
     ('model', hgbr)
 ])
 pipe_gbr_fe_ar_raw = Pipeline([ # gbr
-    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_roll_windows=daily_ar_rolls)),
+    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_rolls=daily_ar_rolls)),
     ('model', gbr)
 ])
 pipe_xgb_fe_ar_raw = Pipeline([ # xgb
-    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_roll_windows=daily_ar_rolls)),
+    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_rolls=daily_ar_rolls)),
     ('model', xgb)
 ])
 pipe_cbr_fe_ar_raw = Pipeline([ # catboost
-    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_roll_windows=daily_ar_rolls)),
+    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_rolls=daily_ar_rolls)),
     ('model', cbr)
 ])
 pipe_lgbm_fe_ar_raw = Pipeline([ # lightgbm
-    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_roll_windows=daily_ar_rolls)),
+    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_rolls=daily_ar_rolls)),
     ('model', lgbm)
 ])
 ##########################################
 # Pipeline with log-transform and back, with FE (including autoregressive FE)
 pipe_rf_fe_ar_logtransf = Pipeline([ # rf
-    ('fe'  , BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_roll_windows=daily_ar_rolls)),
+    ('fe'  , BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_rolls=daily_ar_rolls)),
     ('model', TransformedTargetRegressor(
         regressor    = rf,
         func         = np.log1p,
         inverse_func = np.expm1))
 ])
 pipe_fe_ar_hgbr_logtransf = Pipeline([ # hgbr
-    ('fe'   , BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_roll_windows=daily_ar_rolls)),
+    ('fe'   , BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_rolls=daily_ar_rolls)),
     ('model', TransformedTargetRegressor(
         regressor    = hgbr,
         func         = np.log1p,
         inverse_func = np.expm1))
 ])
 pipe_gbr_fe_ar_logtransf = Pipeline([ # gbr
-    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_roll_windows=daily_ar_rolls)),
+    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_rolls=daily_ar_rolls)),
     ('model', TransformedTargetRegressor(
         regressor=gbr, func=np.log1p, inverse_func=np.expm1))
 ])
 pipe_xgb_fe_ar_logtransf = Pipeline([ # xgb
-    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_roll_windows=daily_ar_rolls)),
+    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_rolls=daily_ar_rolls)),
     ('model', TransformedTargetRegressor(
         regressor=xgb, func=np.log1p, inverse_func=np.expm1))
 ])
 pipe_cbr_fe_ar_logtransf = Pipeline([ # catboost
-    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_roll_windows=daily_ar_rolls)),
+    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_rolls=daily_ar_rolls)),
     ('model', TransformedTargetRegressor(
         regressor=cbr, func=np.log1p, inverse_func=np.expm1))
 ])
 pipe_lgbm_fe_ar_logtransf = Pipeline([ # lightgbm
-    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_roll_windows=daily_ar_rolls)),
+    ('fe', BikeFeatureEngineer(ar_lags=daily_ar_lags, ar_rolls=daily_ar_rolls)),
     ('model', TransformedTargetRegressor(
         regressor=lgbm, func=np.log1p, inverse_func=np.expm1))
 ])
@@ -834,7 +829,7 @@ def compute_vif(df: pd.DataFrame) -> pd.DataFrame:
         vifs.append((col, float(vif)))
     return pd.DataFrame(vifs, columns=["feature", "VIF"]).sort_values("VIF", ascending=False)
 
-def diagnose_multicollinearity(add_lag1: bool, add_roll7: bool, cv):
+def diagnose_multicollinearity(ar_lags, ar_rolls, cv):
     """
     Build engineered TRAIN matrix for one fold, then:
       1) plot correlation heatmap
@@ -843,7 +838,7 @@ def diagnose_multicollinearity(add_lag1: bool, add_roll7: bool, cv):
     tr_idx, _ = next(cv.split(X))                     # first fold, TRAIN ONLY
     X_tr = X.iloc[tr_idx].copy()
 
-    fe = BikeFeatureEngineer(add_lag1=add_lag1, add_roll7=add_roll7)
+    fe = BikeFeatureEngineer(ar_lags=ar_lags, ar_rolls=ar_rolls)
     fe_fit = clone(fe).fit(X_tr)                      # fit FE on train
     Z_tr = fe_fit.transform(X_tr)                     # engineered train design matrix
 
@@ -856,9 +851,9 @@ def diagnose_multicollinearity(add_lag1: bool, add_roll7: bool, cv):
         square=True, linewidths=.5, linecolor='white',
         annot=True, fmt=".2f", annot_kws={"size":8}, ax=ax
     )
-    ax.set_title(f"Post-FE correlations (train-only). AR: lag1={add_lag1}, roll7={add_roll7}")
+    ax.set_title(f"Post-FE correlations (train-only). AR: lags={ar_lags}, rolls={ar_rolls}")
     plt.tight_layout()
-    savefig_pdf(f"fig_corr_train_only_AR_{add_lag1}_{add_roll7}", FIGDIR, fig)
+    savefig_pdf(f"fig_corr_train_only_AR_{str(ar_lags).replace(' ','')}_{str(ar_rolls).replace(' ','')}", FIGDIR, fig)
 
 
     # 2) VIF (multivariate collinearity)
@@ -869,10 +864,10 @@ def diagnose_multicollinearity(add_lag1: bool, add_roll7: bool, cv):
 
 # Run diagnostics for both settings you evaluate with CV
 print("\n=== Multicollinearity diagnostics: NO AR features ===")
-vif_no_ar  = diagnose_multicollinearity(add_lag1=False, add_roll7=False, cv=cv_ts_no)
+vif_no_ar  = diagnose_multicollinearity(ar_lags=None, ar_rolls=None, cv=cv_ts_no)
 
 print("\n=== Multicollinearity diagnostics: WITH AR features ===")
-vif_with_ar = diagnose_multicollinearity(add_lag1=True,  add_roll7=True,  cv=cv_ts_ar)
+vif_with_ar = diagnose_multicollinearity(ar_lags=daily_ar_lags,  ar_rolls=daily_ar_rolls,  cv=cv_ts_ar)
 
 
 
