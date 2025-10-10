@@ -71,27 +71,30 @@ def eval_pipeline_walkforward(pipe, X, y, cv, rmsle_func=_rmsle):
     return float(np.mean(scores))
 
 
-def ar_baseline_scores(y, splitter, window=7, rmsle_func=_rmsle):
+def ar_baseline_scores(y, splitter, *, lags=None, rolls=None, rmsle_func=_rmsle):
     """
-    Compute RMSLE for two simple autoregressive baselines over a splitter:
-      - lag-1: predict previous step's prediction
-      - roll-window: predict median of last `window` predictions/observations
+    Compute RMSLE for autoregressive baselines over a splitter.
 
-    Baselines initialize from the last available training values and never use
-    test labels when generating predictions.
+    Baselines (all step-based):
+    - lag-K: predict value from K steps ago, using only predictions to roll forward
+    - roll-W: predict median of last W values, using only predictions to roll forward
 
     Input:
     - y: Series of labels
     - splitter: cross-validator yielding (train_idx, test_idx)
-    - window: int, window size for rolling median
+    - lags: list[int] | None (e.g., [1, 24, 168])
+    - rolls: list[int] | None (e.g., [24, 168])
     - rmsle_func: function to compute RMSLE (defaults to `_rmsle`)
 
     Output:
-    - float: mean RMSLE for lag-1 baseline
-    - float: mean RMSLE for roll-window baseline
+    - dict[str, float]: mapping like {"lag-1": 0.42, "roll-24": 0.38}
     """
-    lag_scores, roll_scores = [], []
     y = y.copy()
+    lag_list = sorted(set(lags)) if lags else []
+    roll_list = sorted(set(rolls)) if rolls else []
+
+    # Storage of per-baseline scores across folds
+    scores = {**{f"lag-{k}": [] for k in lag_list}, **{f"roll-{w}": [] for w in roll_list}}
 
     for tr_idx, te_idx in splitter.split(y.to_frame()):
         tr_idx = np.asarray(tr_idx)
@@ -99,21 +102,34 @@ def ar_baseline_scores(y, splitter, window=7, rmsle_func=_rmsle):
         y_tr = y.iloc[tr_idx]
         y_te = y.iloc[te_idx]
 
-        buf_lag = deque(y_tr.tail(1).tolist(), maxlen=window)
-        buf_roll = deque(y_tr.tail(window).tolist(), maxlen=window)
+        # Initialize buffers for each baseline from the end of training segment
+        lag_bufs = {k: deque(y_tr.tail(k).tolist(), maxlen=k) for k in lag_list}
+        roll_bufs = {w: deque(y_tr.tail(w).tolist(), maxlen=w) for w in roll_list}
 
-        preds_lag, preds_roll = [], []
+        # Prediction holders per baseline
+        preds_lag = {k: [] for k in lag_list}
+        preds_roll = {w: [] for w in roll_list}
+
+        # Walk forward through test indices, one step at a time
         for _ in te_idx:
-            p_lag = float(buf_lag[-1])
-            preds_lag.append(p_lag)
-            buf_lag.append(p_lag)
+            # lag-K: take the oldest value in the length-K buffer (i.e., K steps back), then append prediction
+            for k in lag_list:
+                buf = lag_bufs[k]
+                p = float(buf[0]) if len(buf) == k and k > 0 else float(buf[-1])
+                preds_lag[k].append(p)
+                buf.append(p)
+            # roll-W: take median of current buffer, then append prediction
+            for w in roll_list:
+                buf = roll_bufs[w]
+                p = float(np.median(buf)) if len(buf) > 0 else float(y_tr.median())
+                preds_roll[w].append(p)
+                buf.append(p)
 
-            p_roll = float(np.median(buf_roll))
-            preds_roll.append(p_roll)
-            buf_roll.append(p_roll)
+        # Score each baseline for this fold
+        for k in lag_list:
+            scores[f"lag-{k}"].append(rmsle_func(y_te, pd.Series(preds_lag[k], index=y_te.index)))
+        for w in roll_list:
+            scores[f"roll-{w}"].append(rmsle_func(y_te, pd.Series(preds_roll[w], index=y_te.index)))
 
-        lag_scores.append(rmsle_func(y_te, pd.Series(preds_lag, index=y_te.index)))
-        roll_scores.append(rmsle_func(y_te, pd.Series(preds_roll, index=y_te.index)))
-
-    return float(np.mean(lag_scores)), float(np.mean(roll_scores))
-
+    # Average across folds
+    return {name: float(np.mean(vals)) for name, vals in scores.items()}

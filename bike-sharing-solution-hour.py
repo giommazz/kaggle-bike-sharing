@@ -347,12 +347,14 @@ cv_ts_no  = make_timeseries_split(n_splits=5, test_size=30)
 
 ##########################################
 # Autoregressive baselines
-lag1_30, roll7_30 = ar_baseline_scores(y, cv_last30, window=7)
-lag1_ts, roll7_ts = ar_baseline_scores(y, cv_ts_ar,  window=7)
-print(f'Last-30 split baseline (lag-1), RMSLE : {lag1_30:.6f}')
-print(f'Last-30 split baseline (roll-7), RMSLE : {roll7_30:.6f}')
-print(f'Time-series split baseline (lag-1), RMSLE : {lag1_ts:.6f}')
-print(f'Time-series split baseline (roll-7), RMSLE : {roll7_ts:.6f}')
+base_last30 = ar_baseline_scores(y, cv_last30, lags=hourly_ar_lags, rolls=hourly_ar_rolls)
+base_ts     = ar_baseline_scores(y, cv_ts_ar,  lags=hourly_ar_lags, rolls=hourly_ar_rolls)
+print('Last-30 split baselines (RMSLE):')
+for name, val in sorted(base_last30.items()):
+    print(f'  {name}: {val:.6f}')
+print('Time-series split baselines (RMSLE):')
+for name, val in sorted(base_ts.items()):
+    print(f'  {name}: {val:.6f}')
 print()
 
 ##########################################
