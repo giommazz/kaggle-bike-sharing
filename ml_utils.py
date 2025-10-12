@@ -28,19 +28,18 @@ rmsle_scorer = make_scorer(_rmsle, greater_is_better=False)
 ##########################################
 def make_timeseries_split(n_splits=5, test_size=30, *, lags=None, rolls=None):
     """
-    Create `TimeSeriesSplit` with `gap` (in steps) sized to the largest
-    autoregressive dependency supplied.
+    Create `TimeSeriesSplit` with `gap` (in steps) sized to largest AR dependency supplied.
 
     Behavior:
-    - If `lags` and/or `rolls` are provided (lists of step sizes), `gap` is
-      set to max(max(lags or [0]), max(rolls or [0])).
-    - If both are None or empty, `gap` is 0.
+    - If `lags` and/or `rolls` (lists of step sizes) are provided, `gap` is
+      set to `max(max(lags or [0]), max(rolls or [0]))`.
+    - If both are `None` or empty, `gap` is `0`.
 
     Input:
-    - n_splits: int, number of splits
-    - test_size: int, size of each test fold
-    - lags: list[int] | None, explicit lag steps
-    - rolls: list[int] | None, explicit rolling window steps
+    - `n_splits`: int, number of splits
+    - `test_size`: int, size of each test fold
+    - `lags`: list[int] | `None`, explicit lag steps
+    - `rolls`: list[int] | `None`, explicit rolling window steps
 
     Output:
     - `TimeSeriesSplit` configured with the computed `gap`
@@ -53,8 +52,8 @@ def make_timeseries_split(n_splits=5, test_size=30, *, lags=None, rolls=None):
 class First19DaysTrainSplit(BaseCrossValidator):
     """
     Single split based on calendar day-of-month:
-    - Train indices: all rows where day-of-month ∈ [1..19] across all months/years
-    - Test indices:  all rows where day-of-month ∈ [20..end] across all months/years
+    - Train indices: all rows where day-of-month in [1...19] across all months/years
+    - Test indices:  all rows where day-of-month in [20...end] across all months/years
 
     Assumptions:
     - `X` (and optionally `y`) are indexed by a `pd.DatetimeIndex` at hourly or daily granularity.
@@ -69,11 +68,11 @@ class First19DaysTrainSplit(BaseCrossValidator):
         return 1
 
     def split(self, X, y=None, groups=None):
-        # Require a DatetimeIndex so we can compute day-of-month robustly
+        # Require a DatetimeIndex to compute day-of-month robustly
         if not hasattr(X, 'index') or not isinstance(X.index, pd.DatetimeIndex):
             raise ValueError("First19DaysTrainSplit requires X.index to be a pd.DatetimeIndex.")
 
-        # Day-of-month for each row (1..31 depending on month)
+        # Day-of-month for each row (1...31 depending on month)
         dom = X.index.day
 
         # Train: days 1..19; Test: days 20..end (vectorized boolean masks)
@@ -98,8 +97,8 @@ class Last30DaysSplit(BaseCrossValidator):
         if n_samples < 31:
             raise ValueError('Need at least 31 rows for a 30-day hold-out.')
 
-        split_point = n_samples - 30 # first index in the test block
-        train_idx = np.arange(0, split_point) # all integers btw 0 and `split_point`
+        split_point = n_samples - 30  # first index in the test block
+        train_idx = np.arange(0, split_point)  # all integers btw 0 and `split_point`
         test_idx = np.arange(split_point, n_samples)
 
         yield train_idx, test_idx
@@ -125,15 +124,14 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
     """
     Feature engineering transformer:
     - drops `atemp` (highly correlated with `temp`)
-    - one-hot encodes 'weathersit'
-    - adds sin/cos pairs for month, season, weekday, and optionally hour; then drops originals
+    - one-hot encodes `weathersit`
+    - adds sin/cos pairs for `mnth`, `season`, `weekday`, and optionally `hr`; then drops originals
     - optionally adds autoregressive (AR) features from past data and then drops `cnt`
 
     AR configuration:
-    - Provide `ar_lags` and/or `ar_rolls` (lists of steps). If both are None or empty,
-      no AR features are added.
+    - Provide `ar_lags` and/or `ar_rolls` (lists of steps). If both None/empty -> no AR features added.
 
-    Returns a DataFrame with preserved column names.
+    Returns a `DataFrame` with preserved column names.
     """
     def __init__(self, ar_lags=None, ar_rolls=None):
         self.ohe = onehot_no_sparse() # Set up a `OneHotEncoder`
@@ -145,7 +143,8 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         X_ = X.copy() # Don't alter og data
         self.ohe.fit(X_[self.weather_cols_]) # learn OHE variable mapping
-        self.cnt_median_ = X_['cnt'].median() # compute median of `cnt` from training data for use in `fillna()`
+        self.cnt_median_ = X_['cnt'].median() # compute median of `cnt` from training data for use in `fillna()` (see below)
+        # Timestamp marker to tell train/test apart: in `transform`, it checks if batch you're transforming is entirely after training (==test/holdout), to decide how to build AR features.
         self._last_seen_train_time_ = X_.index.max() # Store last timestamp seen in training (`DatetimeIndex` value)
         # Determine carry length from configured windows (in steps)
         max_lag = max(self.ar_lags) if self.ar_lags else 0
@@ -181,13 +180,14 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
         X_.drop(columns=['mnth', 'season', 'weekday', 'hr'], inplace=True, errors='ignore')
 
         # 4) Autoregressive features (optional)
-        want_ar = (self.ar_lags is not None and len(self.ar_lags) > 0) or (self.ar_rolls is not None and len(self.ar_rolls) > 0)
+        want_ar = (self.ar_lags is not None and len(self.ar_lags) > 0)\
+            or (self.ar_rolls is not None and len(self.ar_rolls) > 0)
         if want_ar:
-            # Set `use_carry` True if processing test data (all indices after last train time)
+            # Set `use_carry=True` if processing test data (all indices after `_last_seen_train_time_`)
             use_carry = X.index.min() > self._last_seen_train_time_
-            if use_carry:
+            if use_carry: # building AR features on test/holdout
                 feats = self._build_ar_general_test(X)
-            else:
+            else: # building AR features on train
                 feats = self._build_ar_general_train(X)
             for k, v in feats.items():
                 X_[k] = v
@@ -199,9 +199,9 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
 
     def _build_ar_general_train(self, X):
         """
-        Build AR features for training data with arbitrary lags and rolling windows (all in steps).
+        Build AR features for training data with arbitrary `lags` and rolling windows `rolls` (all in steps).
 
-        Returns dict: {feature_name: Series}
+        Returns dict: `{feature_name: Series}`
         """
         feats = {}
         lags = (self.ar_lags if self.ar_lags is not None else [])
@@ -219,12 +219,12 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
 
     def _build_ar_general_test(self, X):
         """
-        Build AR features for test data with arbitrary lags and rolling windows using carryover from training.
+        Build AR features for test data with arbitrary `lags` and rolling windows `rolls` using carryover from training.
 
-        Returns dict: {feature_name: np.ndarray}
+        Returns dict: `{feature_name: np.ndarray}`
         """
         feats = {}
-        lags = (self.ar_lags if self.ar_lags is not None else ([1] if self.add_lag else []))
+        lags = (self.ar_lags if self.ar_lags is not None else [])
         rolls = (self.ar_rolls if self.ar_rolls is not None else [])
         if (not lags) and (not rolls):
             return feats
@@ -248,17 +248,17 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
 def make_no_fe_preprocess(X, target_col='cnt'):
     """
     Build a passthrough preprocessor (no feature engineering): features are passed straight through
-        as-is using `ColumnTransformer`.    
+        as-is using `ColumnTransformer`.
 
     Input:
-    - X: DataFrame to derive feature columns from
-    - target_col: column to exclude (default 'cnt')
+    - `X`: `DataFrame` to derive feature columns from
+    - `target_col`: column to exclude (default `cnt`)
 
     Output:
-    - preprocess: ColumnTransformer that passes features through unchanged
-    - to_df: FunctionTransformer that wraps array output back into a DataFrame
-             with original feature names (handy for LightGBM to keep names)
-    - feat_cols: list of feature column names
+    - `preprocess`: `ColumnTransformer` that passes features through unchanged
+    - `to_df`: `FunctionTransformer` that wraps array output back into a `DataFrame`
+              with original feature names (handy for LightGBM to keep names)
+    - `feat_cols`: list of feature column names
     """
     feat_cols = [c for c in X.columns if c != target_col]  # all columns but `cnt`
     preprocess = ColumnTransformer([('keep_all', 'passthrough', feat_cols)], remainder='drop')  # "Preprocess-only" block:  no FE
