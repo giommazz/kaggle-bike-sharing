@@ -150,6 +150,7 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
         max_lag = max(self.ar_lags) if self.ar_lags else 0
         max_roll = max(self.ar_rolls) if self.ar_rolls else 0
         self._max_ar_window_ = int(max(max_lag, max_roll))
+        # `carry`: last `cnt` values from train to compute test-time AR features (provides initial history without using test labels)
         self._carry_ = X_['cnt'].tail(self._max_ar_window_).to_numpy() if self._max_ar_window_ > 0 else np.array([], dtype=float)
         return self
 
@@ -199,22 +200,22 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
 
     def _build_ar_general_train(self, X):
         """
-        Build AR features for training data with arbitrary `lags` and rolling windows `rolls` (all in steps).
+        Build AR features for train data with arbitrary `lags` and rolling windows `rolls`.
 
         Returns dict: `{feature_name: Series}`
         """
         feats = {}
-        lags = (self.ar_lags if self.ar_lags is not None else [])
-        rolls = (self.ar_rolls if self.ar_rolls is not None else [])
+        lags = self.ar_lags if self.ar_lags is not None else []
+        rolls = self.ar_rolls if self.ar_rolls is not None else []
         if lags:
-            for k in lags:
-                s = X['cnt'].shift(int(k)).fillna(self.cnt_median_)
-                feats[f'cnt_lag{k}'] = s
+            for lag in lags:
+                feature_series = X['cnt'].shift(int(lag)).fillna(self.cnt_median_)
+                feats[f'cnt_lag{lag}'] = feature_series
         if rolls:
-            base = X['cnt'].shift(1)
-            for w in rolls:
-                s = base.rolling(int(w), min_periods=1).median().fillna(self.cnt_median_)
-                feats[f'cnt_roll{w}'] = s
+            shifted_cnt = X['cnt'].shift(1)
+            for window in rolls:
+                feature_series = shifted_cnt.rolling(int(window), min_periods=1).median().fillna(self.cnt_median_)
+                feats[f'cnt_roll{window}'] = feature_series
         return feats
 
     def _build_ar_general_test(self, X):
@@ -228,17 +229,20 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
         rolls = (self.ar_rolls if self.ar_rolls is not None else [])
         if (not lags) and (not rolls):
             return feats
+        # concat train carry and test `cnt` as one history
         series = pd.Series(np.r_[self._carry_, X['cnt'].to_numpy()], index=None)
-        off = len(self._carry_)
+        off = len(self._carry_)  # offset to drop the prepended carry when slicing back to test rows
         if lags:
-            for k in lags:
-                s = series.shift(int(k))
-                feats[f'cnt_lag{k}'] = s.iloc[off:].fillna(self.cnt_median_).to_numpy()
+            for lag in lags:
+                shifted_series = series.shift(int(lag)) # produce lagged view over carry+test history
+                # align to test rows, fill edge NaNs
+                feats[f'cnt_lag{lag}'] = shifted_series.iloc[off:].fillna(self.cnt_median_).to_numpy()
         if rolls:
-            base = series.shift(1)
-            for w in rolls:
-                s = base.rolling(int(w), min_periods=1).median()
-                feats[f'cnt_roll{w}'] = s.iloc[off:].fillna(self.cnt_median_).to_numpy()
+            shifted_series = series.shift(1) # exclude current step from rolling window
+            for window in rolls:
+                rolled_series = shifted_series.rolling(int(window), min_periods=1).median()
+                # drop carry part, fill edge NaNs
+                feats[f'cnt_roll{window}'] = rolled_series.iloc[off:].fillna(self.cnt_median_).to_numpy()
         return feats
 
 
