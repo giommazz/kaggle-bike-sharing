@@ -25,28 +25,15 @@ import matplotlib
 matplotlib.use('Agg')   # non-GUI backend, safe for headless scripts
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.base import clone
-from sklearn.compose import TransformedTargetRegressor
-from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LinearRegression
 from pathlib import Path
 FIGDIR = Path.cwd() / "plots_hour" # save all figures under ./plots
 FIGDIR.mkdir(parents=True, exist_ok=True) # create the folder if missing
 from utils import savefig_pdf
 from eda_utils import iqr_mask
-from ml_utils import make_timeseries_split, make_no_fe_preprocess, Last30DaysSplit, BikeFeatureEngineer
-from model_eval import eval_pipeline, eval_pipeline_walkforward, ar_baseline_scores
-from models import make_model
+from ml_utils import make_timeseries_split, make_no_fe_preprocess, Last30DaysSplit
+from model_eval import evaluate_pipeline, ar_baseline_scores
+from stat_analysis import diagnose_multicollinearity
 
-
-
-"""
-3. Assume that each bike has exactly maximum 12 rentals per day.
-    * Find the maximum number of bicycles `nmax` that was needed in any one day.
-    * Find the 95%-percentile of bicycles `n95` that was needed in any one day.
-5. Visualize the distribution of the covered days depending on the number of available bicycles (e.g. `nmax` bicycles would cover 100% of days, `n95` covers 95%, etc.)
-
-"""
 
 ##########################################
 # DATA CLEANING
@@ -359,438 +346,68 @@ print()
 
 ##########################################
 # Our base regressors
-hgbr = make_model("hgbr")
-rf   = make_model("rf")
-gbr  = make_model("gbr")
-xgb  = make_model("xgb")
-cbr  = make_model("cbr")
-lgbm = make_model("lgbm")
+# Models are referenced by key in `models` list below; actual estimators are built inside `evaluate_pipeline`.
+models = ["rf", "hgbr", "gbr", "xgb", "cbr", "lgbm"]
 
-##########################################
-# Evaluate our pipelines without FE and without log-transform
-pipe_rf_raw = Pipeline([ # rf
-    ('prep' , preprocess),
-    ('model', rf)
-])
-pipe_hgbr_raw = Pipeline([ # hgbr
-    ('prep' , preprocess),
-    ('model', hgbr)
-])
-pipe_gbr_raw = Pipeline([ # gbr
-    ('prep', preprocess),
-    ('model', gbr)
-])
-pipe_xgb_raw = Pipeline([ # xgb
-    ('prep', preprocess),
-    ('model', xgb)
-])
-pipe_cbr_raw = Pipeline([ # catboost
-    ('prep', preprocess),
-    ('model', cbr)
-])
-pipe_lgbm_raw = Pipeline([ # lightgbm
-    ('prep', preprocess),
-    ('to_df', to_df),
-    ('model', lgbm)
-])
-##########################################
-# Evaluate out pipelines without FE but with log-transform and back
-pipe_rf_logtransf = Pipeline([ # rf
-    ('prep' , preprocess),
-    ('model', TransformedTargetRegressor(
-        regressor = rf,
-        func = np.log1p,   # log-transform `y_train`
-        inverse_func = np.expm1)) # revert `y_pred` to og scale to compute RMSLE
-])
-pipe_hgbr_logtransf = Pipeline([ # hgbr
-    ('prep' , preprocess),
-    ('model', TransformedTargetRegressor(
-        regressor = hgbr,
-        func = np.log1p,
-        inverse_func = np.expm1))
-])
-pipe_gbr_logtransf = Pipeline([ # gbr
-    ('prep', preprocess),
-    ('model', TransformedTargetRegressor(
-        regressor=gbr, func=np.log1p, inverse_func=np.expm1))
-])
-pipe_xgb_logtransf = Pipeline([ # xgb
-    ('prep', preprocess),
-    ('model', TransformedTargetRegressor(
-        regressor=xgb, func=np.log1p, inverse_func=np.expm1))
-])
-pipe_lgbm_logtransf = Pipeline([ # lightgbm
-    ('prep', preprocess), # your passthrough by names
-    ('to_df', to_df), # keep names for downstream estimator
-    ('model', TransformedTargetRegressor(
-        regressor=lgbm, func=np.log1p, inverse_func=np.expm1))
-])
-rmsle_xgb_last30_raw = eval_pipeline(pipe_xgb_raw, X, y, cv_last30)
-rmsle_xgb_last30_log = eval_pipeline(pipe_xgb_logtransf, X, y, cv_last30)
-rmsle_xgb_ts_raw     = eval_pipeline(pipe_xgb_raw, X, y, cv_ts_no)
-rmsle_xgb_ts_log     = eval_pipeline(pipe_xgb_logtransf, X, y, cv_ts_no)
-pipe_cbr_logtransf = Pipeline([ # catboost
-    ('prep', preprocess),
-    ('model', TransformedTargetRegressor(
-        regressor=cbr, func=np.log1p, inverse_func=np.expm1))
-])
-rmsle_cbr_last30_raw = eval_pipeline(pipe_cbr_raw, X, y, cv_last30)
-rmsle_cbr_last30_log = eval_pipeline(pipe_cbr_logtransf, X, y, cv_last30)
-rmsle_cbr_ts_raw     = eval_pipeline(pipe_cbr_raw, X, y, cv_ts_no)
-rmsle_cbr_ts_log     = eval_pipeline(pipe_cbr_logtransf, X, y, cv_ts_no)
-rmsle_rf_last30_raw = eval_pipeline(pipe_rf_raw, X, y, cv_last30)
-rmsle_rf_last30_log = eval_pipeline(pipe_rf_logtransf, X, y, cv_last30)
-rmsle_rf_ts_raw = eval_pipeline(pipe_rf_raw, X, y, cv_ts_no)
-rmsle_rf_ts_log = eval_pipeline(pipe_rf_logtransf, X, y, cv_ts_no)
-rmsle_hgbr_last30_raw = eval_pipeline(pipe_hgbr_raw, X, y, cv_last30)
-rmsle_hgbr_last30_log = eval_pipeline(pipe_hgbr_logtransf, X, y, cv_last30)
-rmsle_hgbr_ts_raw     = eval_pipeline(pipe_hgbr_raw, X, y, cv_ts_no)
-rmsle_hgbr_ts_log     = eval_pipeline(pipe_hgbr_logtransf, X, y, cv_ts_no)
-rmsle_gbr_last30_raw = eval_pipeline(pipe_gbr_raw, X, y, cv_last30)
-rmsle_gbr_last30_log = eval_pipeline(pipe_gbr_logtransf, X, y, cv_last30)
-rmsle_gbr_ts_raw     = eval_pipeline(pipe_gbr_raw, X, y, cv_ts_no)
-rmsle_gbr_ts_log     = eval_pipeline(pipe_gbr_logtransf, X, y, cv_ts_no)
-rmsle_xgb_last30_raw = eval_pipeline(pipe_xgb_raw, X, y, cv_last30)
-rmsle_xgb_last30_log = eval_pipeline(pipe_xgb_logtransf, X, y, cv_last30)
-rmsle_xgb_ts_raw     = eval_pipeline(pipe_xgb_raw, X, y, cv_ts_no)
-rmsle_xgb_ts_log     = eval_pipeline(pipe_xgb_logtransf, X, y, cv_ts_no)
-rmsle_lgbm_last30_raw = eval_pipeline(pipe_lgbm_raw, X, y, cv_last30)
-rmsle_lgbm_last30_log = eval_pipeline(pipe_lgbm_logtransf, X, y, cv_last30)
-rmsle_lgbm_ts_raw     = eval_pipeline(pipe_lgbm_raw, X, y, cv_ts_no)
-rmsle_lgbm_ts_log     = eval_pipeline(pipe_lgbm_logtransf, X, y, cv_ts_no)
-print(f"RF + no FE Last30 split, raw : {rmsle_rf_last30_raw:.6f}")
-print(f"RF + no FE, Last30 split, log : {rmsle_rf_last30_log:.6f}")
-print(f"HGBRT + no FE, Last30 split, raw : {rmsle_hgbr_last30_raw:.6f}")
-print(f"HGBRT + no FE, Last30 log, log : {rmsle_hgbr_last30_log:.6f}")
-print(f"GBRT + no FE, Last30 split, raw : {rmsle_gbr_last30_raw:.6f}")
-print(f"GBRT + no FE, Last30 split, log : {rmsle_gbr_last30_log:.6f}")
-print(f"XGB + no FE, Last30 split, raw : {rmsle_xgb_last30_raw:.6f}")
-print(f"XGB + no FE, Last30 split, log : {rmsle_xgb_last30_log:.6f}")
-print(f"CAT + no FE, Last30 split, raw : {rmsle_cbr_last30_raw:.6f}")
-print(f"CAT + no FE, Last30 split, log : {rmsle_cbr_last30_log:.6f}")
-print(f"LGBM + no FE, Last30 split, raw : {rmsle_lgbm_last30_raw:.6f}")
-print(f"LGBM + no FE, Last30 split, log : {rmsle_lgbm_last30_log:.6f}")
-print(f"RF + no FE, TS split, raw : {rmsle_rf_ts_raw:.6f}")
-print(f"RF + no FE, TS split, log : {rmsle_rf_ts_log:.6f}")
-print(f"HGBRT + no FE, TS split, raw : {rmsle_hgbr_ts_raw:.6f}")
-print(f"HGBRT + no FE, TS split, log : {rmsle_hgbr_ts_log:.6f}")
-print(f"GBRT + no FE, TS split, raw : {rmsle_gbr_ts_raw:.6f}")
-print(f"GBRT + no FE, TS split, log : {rmsle_gbr_ts_log:.6f}")
-print(f"XGB + no FE, TS split, raw : {rmsle_xgb_ts_raw:.6f}")
-print(f"XGB + no FE, TS split, log : {rmsle_xgb_ts_log:.6f}")
-print(f"CAT + no FE, TS split, raw : {rmsle_cbr_ts_raw:.6f}")
-print(f"CAT + no FE, TS split, log : {rmsle_cbr_ts_log:.6f}")
-print(f"LGBM + no FE, TS split, raw : {rmsle_lgbm_ts_raw:.6f}")
-print(f"LGBM + no FE, TS split, log : {rmsle_lgbm_ts_log:.6f}")
-print()
+
 
 
 
 ##########################################
-# 3.2.8) Evaluate our pipeline with feature engineering but without autoregressive features
+# MODEL EVALUATION
 ##########################################
-# Raw pipeline without log-transform, with FE (no autoregressive FE)
-pipe_rf_fe_raw = Pipeline([ # rf
-    ('fe'  , BikeFeatureEngineer()),
-    ('model', rf)
-])
-pipe_hgbr_fe_raw = Pipeline([ # hgbr
-    ('fe'   , BikeFeatureEngineer()),
-    ('model', hgbr)
-])
-pipe_gbr_fe_raw = Pipeline([ # gbr
-    ('fe', BikeFeatureEngineer()),
-    ('model', gbr)
-])
-pipe_xgb_fe_raw = Pipeline([ # xgb
-    ('fe', BikeFeatureEngineer()),
-    ('model', xgb)
-])
-pipe_cbr_fe_raw = Pipeline([ # catboost
-    ('fe', BikeFeatureEngineer()),
-    ('model', cbr)
-])
-pipe_lgbm_fe_raw = Pipeline([ # lightgbm
-    ('fe', BikeFeatureEngineer()),
-    ('model', lgbm)
-])
-##########################################
-# Pipeline with log-transform and back, with FE (no autoregressive FE)
-pipe_rf_fe_logtransf = Pipeline([ # rf
-    ('fe'  , BikeFeatureEngineer()),
-    ('model', TransformedTargetRegressor(
-        regressor    = rf,
-        func         = np.log1p,
-        inverse_func = np.expm1))
-])
-pipe_fe_hgbr_logtransf = Pipeline([ # hgbr
-    ('fe'   , BikeFeatureEngineer()),
-    ('model', TransformedTargetRegressor(
-        regressor    = hgbr,
-        func         = np.log1p,
-        inverse_func = np.expm1))
-])
-pipe_gbr_fe_logtransf = Pipeline([
-    ('fe', BikeFeatureEngineer()),
-    ('model', TransformedTargetRegressor(
-        regressor=gbr, func=np.log1p, inverse_func=np.expm1))
-])
-pipe_xgb_fe_logtransf = Pipeline([
-    ('fe', BikeFeatureEngineer()),
-    ('model', TransformedTargetRegressor(
-        regressor=xgb, func=np.log1p, inverse_func=np.expm1))
-])
-pipe_cbr_fe_logtransf = Pipeline([
-    ('fe', BikeFeatureEngineer()),
-    ('model', TransformedTargetRegressor(
-        regressor=cbr, func=np.log1p, inverse_func=np.expm1))
-])
-pipe_lgbm_fe_logtransf = Pipeline([
-    ('fe', BikeFeatureEngineer()),
-    ('model', TransformedTargetRegressor(
-        regressor=lgbm, func=np.log1p, inverse_func=np.expm1))
-])
-rmsle_rf_fe_last30_raw = eval_pipeline(pipe_rf_fe_raw, X, y, cv_last30)
-rmsle_rf_fe_last30_log = eval_pipeline(pipe_rf_fe_logtransf, X, y, cv_last30)
-rmsle_rf_fe_ts_raw = eval_pipeline(pipe_rf_fe_raw, X, y, cv_ts_no)
-rmsle_rf_fe_ts_log = eval_pipeline(pipe_rf_fe_logtransf, X, y, cv_ts_no)
-rmsle_fe_hgbr_last30_raw = eval_pipeline(pipe_hgbr_fe_raw, X, y, cv_last30)
-rmsle_fe_hgbr_last30_log = eval_pipeline(pipe_fe_hgbr_logtransf, X, y, cv_last30)
-rmsle_fe_hgbr_ts_raw     = eval_pipeline(pipe_hgbr_fe_raw, X, y, cv_ts_no)
-rmsle_fe_hgbr_ts_log     = eval_pipeline(pipe_fe_hgbr_logtransf, X, y, cv_ts_no)
-rmsle_gbr_fe_last30_raw = eval_pipeline(pipe_gbr_fe_raw, X, y, cv_last30)
-rmsle_gbr_fe_last30_log = eval_pipeline(pipe_gbr_fe_logtransf, X, y, cv_last30)
-rmsle_gbr_fe_ts_raw     = eval_pipeline(pipe_gbr_fe_raw, X, y, cv_ts_no)
-rmsle_gbr_fe_ts_log     = eval_pipeline(pipe_gbr_fe_logtransf, X, y, cv_ts_no)
-rmsle_xgb_fe_last30_raw = eval_pipeline(pipe_xgb_fe_raw, X, y, cv_last30)
-rmsle_xgb_fe_last30_log = eval_pipeline(pipe_xgb_fe_logtransf, X, y, cv_last30)
-rmsle_xgb_fe_ts_raw     = eval_pipeline(pipe_xgb_fe_raw, X, y, cv_ts_no)
-rmsle_xgb_fe_ts_log     = eval_pipeline(pipe_xgb_fe_logtransf, X, y, cv_ts_no)
-rmsle_cbr_fe_last30_raw = eval_pipeline(pipe_cbr_fe_raw, X, y, cv_last30)
-rmsle_cbr_fe_last30_log = eval_pipeline(pipe_cbr_fe_logtransf, X, y, cv_last30)
-rmsle_cbr_fe_ts_raw     = eval_pipeline(pipe_cbr_fe_raw, X, y, cv_ts_no)
-rmsle_cbr_fe_ts_log     = eval_pipeline(pipe_cbr_fe_logtransf, X, y, cv_ts_no)
-rmsle_lgbm_fe_last30_raw = eval_pipeline(pipe_lgbm_fe_raw, X, y, cv_last30)
-rmsle_lgbm_fe_last30_log = eval_pipeline(pipe_lgbm_fe_logtransf, X, y, cv_last30)
-rmsle_lgbm_fe_ts_raw     = eval_pipeline(pipe_lgbm_fe_raw, X, y, cv_ts_no)
-rmsle_lgbm_fe_ts_log     = eval_pipeline(pipe_lgbm_fe_logtransf, X, y, cv_ts_no)
-print(f"RF + FE (no AR), Last30 split, raw : {rmsle_rf_fe_last30_raw:.6f}")
-print(f"RF + FE (no AR), Last30 split, log : {rmsle_rf_fe_last30_log:.6f}")
-print(f"HGBRT + FE (no AR), Last30 split, raw : {rmsle_fe_hgbr_last30_raw:.6f}")
-print(f"HGBRT + FE (no AR), Last30 split, log : {rmsle_fe_hgbr_last30_log:.6f}")
-print(f"GBRT + FE (no AR), Last30 split, raw : {rmsle_gbr_fe_last30_raw:.6f}")
-print(f"GBRT + FE (no AR), Last30 split, log : {rmsle_gbr_fe_last30_log:.6f}")
-print(f"XGB + FE (no AR), Last30 split, raw : {rmsle_xgb_fe_last30_raw:.6f}")
-print(f"XGB + FE (no AR), Last30 split, log : {rmsle_xgb_fe_last30_log:.6f}")
-print(f"CAT + FE (no AR), Last30 split, raw : {rmsle_cbr_fe_last30_raw:.6f}")
-print(f"CAT + FE (no AR), Last30 split, log : {rmsle_cbr_fe_last30_log:.6f}")
-print(f"LGBM + FE (no AR), Last30 split, raw : {rmsle_lgbm_fe_last30_raw:.6f}")
-print(f"LGBM + FE (no AR), Last30 split, log : {rmsle_lgbm_fe_last30_log:.6f}")
-print(f"RF + FE (no AR), TS split, raw : {rmsle_rf_fe_ts_raw:.6f}")
-print(f"RF + FE (no AR), TS split, log : {rmsle_rf_fe_ts_log:.6f}")
-print(f"HGBRT + FE (no AR), TS split, raw : {rmsle_fe_hgbr_ts_raw:.6f}")
-print(f"HGBRT + FE (no AR), TS split, log : {rmsle_fe_hgbr_ts_log:.6f}")
-print(f"GBRT + FE (no AR), TS split, raw : {rmsle_gbr_fe_ts_raw:.6f}")
-print(f"GBRT + FE (no AR), TS split, log : {rmsle_gbr_fe_ts_log:.6f}")
-print(f"XGB + FE (no AR), TS split, raw : {rmsle_xgb_fe_ts_raw:.6f}")
-print(f"XGB + FE (no AR), TS split, log : {rmsle_xgb_fe_ts_log:.6f}")
-print(f"CAT + FE (no AR), TS split, raw : {rmsle_cbr_fe_ts_raw:.6f}")
-print(f"CAT + FE (no AR), TS split, log : {rmsle_cbr_fe_ts_log:.6f}")
-print(f"LGBM + FE (no AR), TS split, raw : {rmsle_lgbm_fe_ts_raw:.6f}")
-print(f"LGBM + FE (no AR), TS split, log : {rmsle_lgbm_fe_ts_log:.6f}")
-print()
+# No FE (passthrough)
+results_no_fe = evaluate_pipeline(
+    models,
+    'no_fe',
+    X=X, y=y,
+    cv_last30=cv_last30,
+    cv_ts_no=cv_ts_no,
+    cv_ts_ar=cv_ts_ar,
+    preprocess=preprocess,
+    to_df=to_df,
+)
+print("\n=== Evaluation: no FE ===")
+print(results_no_fe.sort_values(["split", "model", "log"]).to_string(index=False))
 
-##########################################
-# 3.2.9) Evaluate our pipeline with feature engineering including autoregressive features
-##########################################
-# Raw pipeline without log-transform, with FE (including autoregressive FE)
-pipe_rf_fe_ar_raw = Pipeline([ # rf
-    ('fe'  , BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_rolls=hourly_ar_rolls)),
-    ('model', rf)
-])
-pipe_fe_ar_hgbr_raw = Pipeline([ # hgbr
-    ('fe'   , BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_rolls=hourly_ar_rolls)),
-    ('model', hgbr)
-])
-pipe_gbr_fe_ar_raw = Pipeline([ # gbr
-    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_rolls=hourly_ar_rolls)),
-    ('model', gbr)
-])
-pipe_xgb_fe_ar_raw = Pipeline([ # xgb
-    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_rolls=hourly_ar_rolls)),
-    ('model', xgb)
-])
-pipe_cbr_fe_ar_raw = Pipeline([ # catboost
-    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_rolls=hourly_ar_rolls)),
-    ('model', cbr)
-])
-pipe_lgbm_fe_ar_raw = Pipeline([ # lightgbm
-    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_rolls=hourly_ar_rolls)),
-    ('model', lgbm)
-])
-##########################################
-# Pipeline with log-transform and back, with FE (including autoregressive FE)
-pipe_rf_fe_ar_logtransf = Pipeline([ # rf
-    ('fe'  , BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_rolls=hourly_ar_rolls)),
-    ('model', TransformedTargetRegressor(
-        regressor    = rf,
-        func         = np.log1p,
-        inverse_func = np.expm1))
-])
-pipe_fe_ar_hgbr_logtransf = Pipeline([ # hgbr
-    ('fe'   , BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_rolls=hourly_ar_rolls)),
-    ('model', TransformedTargetRegressor(
-        regressor    = hgbr,
-        func         = np.log1p,
-        inverse_func = np.expm1))
-])
-pipe_gbr_fe_ar_logtransf = Pipeline([ # gbr
-    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_rolls=hourly_ar_rolls)),
-    ('model', TransformedTargetRegressor(
-        regressor=gbr, func=np.log1p, inverse_func=np.expm1))
-])
-pipe_xgb_fe_ar_logtransf = Pipeline([ # xgb
-    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_rolls=hourly_ar_rolls)),
-    ('model', TransformedTargetRegressor(
-        regressor=xgb, func=np.log1p, inverse_func=np.expm1))
-])
-pipe_cbr_fe_ar_logtransf = Pipeline([ # catboost
-    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_rolls=hourly_ar_rolls)),
-    ('model', TransformedTargetRegressor(
-        regressor=cbr, func=np.log1p, inverse_func=np.expm1))
-])
-pipe_lgbm_fe_ar_logtransf = Pipeline([ # lightgbm
-    ('fe', BikeFeatureEngineer(ar_lags=hourly_ar_lags, ar_rolls=hourly_ar_rolls)),
-    ('model', TransformedTargetRegressor(
-        regressor=lgbm, func=np.log1p, inverse_func=np.expm1))
-])
-rmsle_rf_fe_ar_last30_raw = eval_pipeline_walkforward(pipe_rf_fe_ar_raw, X, y, cv_last30)
-rmsle_rf_fe_ar_last30_log = eval_pipeline_walkforward(pipe_rf_fe_ar_logtransf, X, y, cv_last30)
-rmsle_rf_fe_ar_ts_raw = eval_pipeline_walkforward(pipe_rf_fe_ar_raw, X, y, cv_ts_ar)
-rmsle_rf_fe_ar_ts_log = eval_pipeline_walkforward(pipe_rf_fe_ar_logtransf, X, y, cv_ts_ar)
-rmsle_fe_ar_hgbr_last30_raw = eval_pipeline_walkforward(pipe_fe_ar_hgbr_raw, X, y, cv_last30)
-rmsle_fe_ar_hgbr_last30_log = eval_pipeline_walkforward(pipe_fe_ar_hgbr_logtransf, X, y, cv_last30)
-rmsle_fe_ar_hgbr_ts_raw     = eval_pipeline_walkforward(pipe_fe_ar_hgbr_raw, X, y, cv_ts_ar)
-rmsle_fe_ar_hgbr_ts_log     = eval_pipeline_walkforward(pipe_fe_ar_hgbr_logtransf, X, y, cv_ts_ar)
-rmsle_gbr_fe_ar_last30_raw = eval_pipeline_walkforward(pipe_gbr_fe_ar_raw, X, y, cv_last30)
-rmsle_gbr_fe_ar_last30_log = eval_pipeline_walkforward(pipe_gbr_fe_ar_logtransf, X, y, cv_last30)
-rmsle_gbr_fe_ar_ts_raw     = eval_pipeline_walkforward(pipe_gbr_fe_ar_raw, X, y, cv_ts_ar)
-rmsle_gbr_fe_ar_ts_log     = eval_pipeline_walkforward(pipe_gbr_fe_ar_logtransf, X, y, cv_ts_ar)
-rmsle_xgb_fe_ar_last30_raw = eval_pipeline_walkforward(pipe_xgb_fe_ar_raw, X, y, cv_last30)
-rmsle_xgb_fe_ar_last30_log = eval_pipeline_walkforward(pipe_xgb_fe_ar_logtransf, X, y, cv_last30)
-rmsle_xgb_fe_ar_ts_raw     = eval_pipeline_walkforward(pipe_xgb_fe_ar_raw, X, y, cv_ts_ar)
-rmsle_xgb_fe_ar_ts_log     = eval_pipeline_walkforward(pipe_xgb_fe_ar_logtransf, X, y, cv_ts_ar)
-rmsle_cbr_fe_ar_last30_raw = eval_pipeline_walkforward(pipe_cbr_fe_ar_raw, X, y, cv_last30)
-rmsle_cbr_fe_ar_last30_log = eval_pipeline_walkforward(pipe_cbr_fe_ar_logtransf, X, y, cv_last30)
-rmsle_cbr_fe_ar_ts_raw     = eval_pipeline_walkforward(pipe_cbr_fe_ar_raw, X, y, cv_ts_ar)
-rmsle_cbr_fe_ar_ts_log     = eval_pipeline_walkforward(pipe_cbr_fe_ar_logtransf, X, y, cv_ts_ar)
-rmsle_lgbm_fe_ar_last30_raw = eval_pipeline_walkforward(pipe_lgbm_fe_ar_raw, X, y, cv_last30)
-rmsle_lgbm_fe_ar_last30_log = eval_pipeline_walkforward(pipe_lgbm_fe_ar_logtransf, X, y, cv_last30)
-rmsle_lgbm_fe_ar_ts_raw     = eval_pipeline_walkforward(pipe_lgbm_fe_ar_raw, X, y, cv_ts_ar)
-rmsle_lgbm_fe_ar_ts_log     = eval_pipeline_walkforward(pipe_lgbm_fe_ar_logtransf, X, y, cv_ts_ar)
-print(f"RF + FE (with AR), Last30 split, raw : {rmsle_rf_fe_ar_last30_raw:.6f}")
-print(f"RF + FE (with AR), Last30 split, log : {rmsle_rf_fe_ar_last30_log:.6f}")
-print(f"HGBRT + FE (with AR), Last30 split, raw : {rmsle_fe_ar_hgbr_last30_raw:.6f}")
-print(f"HGBRT + FE (with AR), Last30 log : {rmsle_fe_ar_hgbr_last30_log:.6f}")
-print(f"GBRT + FE (with AR), Last30 split, raw : {rmsle_gbr_fe_ar_last30_raw:.6f}")
-print(f"GBRT + FE (with AR), Last30 split, log : {rmsle_gbr_fe_ar_last30_log:.6f}")
-print(f"XGB + FE (with AR), Last30 split, raw : {rmsle_xgb_fe_ar_last30_raw:.6f}")
-print(f"XGB + FE (with AR), Last30 split, log : {rmsle_xgb_fe_ar_last30_log:.6f}")
-print(f"CAT + FE (with AR), Last30 split, raw : {rmsle_cbr_fe_ar_last30_raw:.6f}")
-print(f"CAT + FE (with AR), Last30 split, log : {rmsle_cbr_fe_ar_last30_log:.6f}")
-print(f"LGBM + FE (with AR), Last30 split, raw : {rmsle_lgbm_fe_ar_last30_raw:.6f}")
-print(f"LGBM + FE (with AR), Last30 split, log : {rmsle_lgbm_fe_ar_last30_log:.6f}")
-print(f"RF + FE (with AR), TS split, raw : {rmsle_rf_fe_ar_ts_raw:.6f}")
-print(f"RF + FE (with AR), TS split, log : {rmsle_rf_fe_ar_ts_log:.6f}")
-print(f"HGBRT + FE (with AR),  TS   raw : {rmsle_fe_ar_hgbr_ts_raw:.6f}")
-print(f"HGBRT + FE (with AR),  TS   log : {rmsle_fe_ar_hgbr_ts_log:.6f}")
-print(f"GBRT + FE (with AR), TS split, raw : {rmsle_gbr_fe_ar_ts_raw:.6f}")
-print(f"GBRT + FE (with AR), TS split, log : {rmsle_gbr_fe_ar_ts_log:.6f}")
-print(f"XGB + FE (with AR), TS split, raw : {rmsle_xgb_fe_ar_ts_raw:.6f}")
-print(f"XGB + FE (with AR), TS split, log : {rmsle_xgb_fe_ar_ts_log:.6f}")
-print(f"CAT + FE (with AR), TS split, raw : {rmsle_cbr_fe_ar_ts_raw:.6f}")
-print(f"CAT + FE (with AR), TS split, log : {rmsle_cbr_fe_ar_ts_log:.6f}")
-print(f"LGBM + FE (with AR), TS split, raw : {rmsle_lgbm_fe_ar_ts_raw:.6f}")
-print(f"LGBM + FE (with AR), TS split, log : {rmsle_lgbm_fe_ar_ts_log:.6f}")
-print()
+# FE, no AR
+results_fe = evaluate_pipeline(
+    models,
+    'fe',
+    X=X, y=y,
+    cv_last30=cv_last30,
+    cv_ts_no=cv_ts_no,
+    cv_ts_ar=cv_ts_ar,
+)
+print("\n=== Evaluation: FE (no AR) ===")
+print(results_fe.sort_values(["split", "model", "log"]).to_string(index=False))
+
+# FE + AR (walk-forward pipeline evaluation)
+results_fe_ar = evaluate_pipeline(
+    models,
+    'fe_ar',
+    X=X, y=y,
+    cv_last30=cv_last30,
+    cv_ts_no=cv_ts_no,
+    cv_ts_ar=cv_ts_ar,
+    ar_lags=hourly_ar_lags,
+    ar_rolls=hourly_ar_rolls,
+)
+print("\n=== Evaluation: FE + AR ===")
+print(results_fe_ar.sort_values(["split", "model", "log"]).to_string(index=False))
+
+
+
+
 
 ##########################################
 # 3.2.10) Diagnostics: multicollinearity on engineered features (TRAIN ONLY)
 ##########################################
-# Why train-only: avoid peeking at the test distribution and keep diagnostics fold-consistent. Use TSS per sklearn docs. 
-# (TimeSeriesSplit is the correct CV for ordered data; 'gap' protects AR features.)  # refs: sklearn TSS docs
-# Helper: VIF
-def compute_vif(df: pd.DataFrame) -> pd.DataFrame:
-    Xn = df.select_dtypes(include=[np.number]).copy()
-    # add intercept for OLS-style VIF computation
-    Xn.insert(0, "_intercept", 1.0)
-    vifs = []
-    A = Xn.to_numpy()
-    cols = Xn.columns.tolist()
-    for j, col in enumerate(cols[1:], start=1):  # skip intercept at 0
-        yj = A[:, j]
-        Xj = np.delete(A, j, axis=1)
-        r2 = LinearRegression(fit_intercept=False).fit(Xj, yj).score(Xj, yj)
-        # guard against numerical 1.0
-        vif = np.inf if r2 >= 1 - 1e-12 else 1.0 / (1.0 - r2)
-        vifs.append((col, float(vif)))
-    return pd.DataFrame(vifs, columns=["feature", "VIF"]).sort_values("VIF", ascending=False)
-
-def diagnose_multicollinearity(ar_lags, ar_rolls, cv):
-    """
-    Build engineered TRAIN matrix for one fold, then:
-      1) plot correlation heatmap
-      2) print top VIFs
-    """
-    tr_idx, _ = next(cv.split(X))                     # first fold, TRAIN ONLY
-    X_tr = X.iloc[tr_idx].copy()
-
-    fe = BikeFeatureEngineer(ar_lags=ar_lags, ar_rolls=ar_rolls)
-    fe_fit = clone(fe).fit(X_tr)                      # fit FE on train
-    Z_tr = fe_fit.transform(X_tr)                     # engineered train design matrix
-
-    # 1) Correlation heatmap (pairwise) with annotations and upper-triangle mask
-    corr = Z_tr.corr(numeric_only=True)
-    mask = np.triu(np.ones_like(corr, dtype=bool), k=1)  # hide upper triangle
-    fig, ax = plt.subplots(figsize=(12, 9))
-    sns.heatmap(
-        corr, mask=mask, cmap="vlag", center=0, vmin=-1, vmax=1,
-        square=True, linewidths=.5, linecolor='white',
-        annot=True, fmt=".2f", annot_kws={"size":8}, ax=ax
-    )
-    ax.set_title(f"Post-FE correlations (train-only). AR: lags={ar_lags}, rolls={ar_rolls}")
-    plt.tight_layout()
-    savefig_pdf(f"fig_corr_train_only_AR_{str(ar_lags).replace(' ','')}_{str(ar_rolls).replace(' ','')}", FIGDIR, fig)
-
-
-    # 2) VIF (multivariate collinearity)
-    vif_df = compute_vif(Z_tr)
-    print("Top VIFs (train-only):")
-    print(vif_df.head(20).to_string(index=False))
-    return vif_df
+# Why train-only: avoid peeking at the test distribution and keep diagnostics fold-consistent.
 
 # Run diagnostics for both settings you evaluate with CV
 print("\n=== Multicollinearity diagnostics: NO AR features ===")
-vif_no_ar  = diagnose_multicollinearity(ar_lags=None, ar_rolls=None, cv=cv_ts_no)
+vif_no_ar  = diagnose_multicollinearity(X, cv=cv_ts_no, ar_lags=None, ar_rolls=None, figdir=FIGDIR)
 
 print("\n=== Multicollinearity diagnostics: WITH AR features ===")
-vif_with_ar = diagnose_multicollinearity(ar_lags=hourly_ar_lags,  ar_rolls=hourly_ar_rolls,  cv=cv_ts_ar)
-
-
-
-
-"""# Potential improvements
--   Hyperparameter tuning of the RF
--   Add more features:
-  - autoregressive: rolling mean instead of median, or as well as rolling median; lag-based feature, not only computed from `cnt` but also from `casual` and `registered`(if not heavily correlated with `cnt`)
-  - weather: "pleasant_weather", for example if temp > 0.5 and hum < 0.6. For this, I would read in detail the paper that created the UCI dataset, plus articles on how weather and bike rental forecasts are related, etc.
-- Explore feature importance
-- Try new models
-  - Gradient-boosted trees: they keep learning from the errors of previous trees, thus reducing bias and capturing subtler patterns than an RF, which just averages many independent trees
-  - Time-series specific (maybe, if not even GBT works?): something like Prophet? Would need further exploration...
-- The dataset is very tiny so the model might not be learning a lot: try retraining after gathering more data
-
-## References
-
-
-"""
+vif_with_ar = diagnose_multicollinearity(X, cv=cv_ts_ar, ar_lags=hourly_ar_lags,  ar_rolls=hourly_ar_rolls, figdir=FIGDIR)

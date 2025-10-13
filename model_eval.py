@@ -3,76 +3,55 @@ import pandas as pd
 from collections import deque
 from sklearn.base import clone
 from sklearn.model_selection import cross_val_score
+from sklearn.pipeline import Pipeline
+from sklearn.compose import TransformedTargetRegressor
 
-from ml_utils import _rmsle, rmsle_scorer
+from ml_utils import _rmsle, rmsle_scorer, BikeFeatureEngineer
+from models import make_model
 
 
-def eval_pipeline(pipe, X, y, cv, scorer=rmsle_scorer):
+def _evaluate_no_ar(pipe, X, y, cv, scorer=rmsle_scorer):
     """
-    Evaluate a pipeline without autoregressive (AR) features, via cross-validation, using a scorer (default: RMSLE).
+    Helper: Evaluate a pipeline without AR features via cross-validation.
 
-    Input:
-    - `pipe`: sklearn Pipeline/estimator to evaluate
-    - `X`: features (DataFrame or array-like)
-    - `y`: target values (Series/array-like)
-    - `cv`: cross-validator yielding train/test splits
-    - `scorer`: sklearn scorer (defaults to `rmsle_scorer` which returns negative values)
-
-    Output:
-    - float: mean score across folds. Return positive value for RMSLE
+    Returns positive RMSLE (mean across folds).
     """
     scores = cross_val_score(pipe, X, y, cv=cv, scoring=scorer)
-    # Our default scorer returns negative RMSLE: flip sign so smaller is better but positive
-    return float(-scores.mean())
+    return float(-scores.mean())  # scorer is negative RMSLE
 
 
-def eval_pipeline_walkforward(pipe, X, y, cv, rmsle_func=_rmsle):
+def _evaluate_ar_walkforward(pipe, X, y, cv, rmsle_func=_rmsle):
     """
-    Walk-forward evaluation for pipelines with autoregressive (AR) features, via cross validation, using a scoroes (default: RMSLE)
+    Helper: Walk-forward evaluation for pipelines with AR features.
 
-    - Builds test-time AR features using previous test-step predictions, not true labels
-      -> mirrors deployment + prevents look-ahead leakage.
-    - Requires the pipeline to expose/have the following steps:
-        - `fe`: a feature engineering transformer (e.g., `BikeFeatureEngineer`)
-        - `model`: the final estimator used for prediction
-
-    Input:
-    - `pipe`: sklearn Pipeline with steps named 'fe' and 'model'
-    - `X`: DataFrame of features including 'cnt' used only to construct AR features
-    - `y`: Series of labels aligned with X
-    - `cv`: splitter yielding train/test indices in time order
-    - `rmsle_func`: function to compute RMSLE (defaults to `_rmsle`)
-
-    Output:
-    - float: mean RMSLE across splits
+    Builds test-time AR features using previous test-step predictions to avoid leakage.
+    Looks for a feature-engineering step named 'fe' or 'features', and a final 'model' step.
+    Returns mean RMSLE across splits.
     """
     scores = []
-    for tr_idx, te_idx in cv.split(X): # select train and test set based on CV splits
+    for tr_idx, te_idx in cv.split(X):
         X_tr, y_tr = X.iloc[tr_idx], y.iloc[tr_idx]
         X_te, y_te = X.iloc[te_idx], y.iloc[te_idx]
 
         estimator = clone(pipe).fit(X_tr, y_tr)
-        if 'fe' not in estimator.named_steps:
-            raise ValueError("eval_pipeline_walkforward requires a 'fe' step (BikeFeatureEngineer).")
-        fe = estimator.named_steps['fe']
+        fe_step_name = 'fe' if 'fe' in estimator.named_steps else ('features' if 'features' in estimator.named_steps else None)
+        if fe_step_name is None:
+            raise ValueError("_evaluate_ar_walkforward requires a 'fe' or 'features' step (BikeFeatureEngineer).")
+        fe = estimator.named_steps[fe_step_name]
         model = estimator.named_steps['model']
 
-        # AR features depend on past true labels `cnt` to compute lags/rolls. In production, `cnt` is unavailable, so can only use prev. preds.
-        # -> so instead of using `cnt` to compute AR features (which would be cheating) use curr. preds as "proxy labels" (`target_proxy`)
         preds = []
-        # Optimization: use only a sliding window up to max FE-AR span
         max_window = getattr(fe, "_max_ar_window_", 0) or 0
         for k in range(len(X_te)):
-            start = max(0, k + 1 - max_window) if max_window > 0 else k # Only info from last `max_window` row (when AR is used)...
-            te_window = X_te.iloc[start:k+1].copy() # ...up to and including current step
-            # use prev. preds (restricted to window) + set current step to NaN (AR features use shift(k) with k≥1)
+            start = max(0, k + 1 - max_window) if max_window > 0 else k
+            te_window = X_te.iloc[start:k+1].copy()
             past_len = len(te_window) - 1
             preds_slice = preds[-past_len:] if past_len > 0 else []
             target_proxy = pd.Series(preds_slice + [np.nan], index=te_window.index, dtype='float64')
-            te_window['cnt'] = target_proxy.values # enables AR feature construction without leakage
+            te_window['cnt'] = target_proxy.values
 
-            last_row_features = fe.transform(te_window).iloc[[-1]] # engineer features for current step (which is the last row `iloc[-1]`)
-            y_hat = model.predict(last_row_features).item() # prediction
+            last_row_features = fe.transform(te_window).iloc[[-1]]
+            y_hat = model.predict(last_row_features).item()
             preds.append(float(y_hat))
 
         scores.append(rmsle_func(y_te, pd.Series(preds, index=y_te.index)))
@@ -143,3 +122,90 @@ def ar_baseline_scores(y, splitter, *, lags=None, rolls=None, rmsle_func=_rmsle)
 
     # Average across folds
     return {name: float(np.mean(vals)) for name, vals in scores.items()}
+
+
+def _build_pipeline(model_key: str,
+                    estimator,
+                    fe_mode: str,
+                    *,
+                    log: bool,
+                    preprocess=None,
+                    to_df=None,
+                    ar_lags=None,
+                    ar_rolls=None) -> Pipeline:
+    """
+    Build a unified pipeline with a single 'features' step and final 'model' step.
+
+    fe_mode: one of {'no_fe','fe','fe_ar'}
+    - 'no_fe': uses provided `preprocess` (ColumnTransformer). Adds `to_df` for LightGBM only.
+    - 'fe'   : uses BikeFeatureEngineer() (no AR)
+    - 'fe_ar': uses BikeFeatureEngineer(ar_lags, ar_rolls)
+    """
+    steps = []
+    if fe_mode == 'no_fe':
+        if preprocess is None:
+            raise ValueError("preprocess must be provided when fe_mode='no_fe'")
+        steps.append(('features', preprocess))
+        if model_key.lower() == 'lgbm' and to_df is not None:
+            steps.append(('to_df', to_df))
+    elif fe_mode == 'fe':
+        steps.append(('features', BikeFeatureEngineer()))
+    elif fe_mode == 'fe_ar':
+        steps.append(('features', BikeFeatureEngineer(ar_lags=ar_lags, ar_rolls=ar_rolls)))
+    else:
+        raise ValueError(f"Unknown fe_mode: {fe_mode}")
+
+    final_est = estimator if not log else TransformedTargetRegressor(
+        regressor=estimator, func=np.log1p, inverse_func=np.expm1
+    )
+    steps.append(('model', final_est))
+    return Pipeline(steps)
+
+
+def evaluate_pipeline(models,
+                      fe_mode: str,
+                      *,
+                      X,
+                      y,
+                      cv_last30,
+                      cv_ts_no,
+                      cv_ts_ar,
+                      preprocess=None,
+                      to_df=None,
+                      ar_lags=None,
+                      ar_rolls=None,
+                      logs=(False, True)) -> pd.DataFrame:
+    """
+    Orchestrate evaluation over a suite of models and log-transform settings.
+
+    - models: list[str] of model keys for `make_model()`
+    - fe_mode: 'no_fe' | 'fe' | 'fe_ar'
+    - evaluates on Last30 split and the appropriate TS-CV (no-AR -> cv_ts_no, AR -> cv_ts_ar)
+
+    Returns a DataFrame with columns: ['model','fe_mode','log','split','rmsle']
+    """
+    rows = []
+    if fe_mode == 'fe_ar':
+        eval_fn = _evaluate_ar_walkforward
+        ts_cv = cv_ts_ar
+    else:
+        eval_fn = _evaluate_no_ar
+        ts_cv = cv_ts_no
+
+    for key in models:
+        est = make_model(key)
+        for log in logs:
+            pipe = _build_pipeline(
+                key, est, fe_mode,
+                log=log,
+                preprocess=preprocess,
+                to_df=to_df,
+                ar_lags=ar_lags,
+                ar_rolls=ar_rolls,
+            )
+            r_last30 = eval_fn(pipe, X, y, cv_last30)
+            r_ts = eval_fn(pipe, X, y, ts_cv)
+            rows.append({'model': key, 'fe_mode': fe_mode, 'log': log, 'split': 'last30', 'rmsle': r_last30})
+            rows.append({'model': key, 'fe_mode': fe_mode, 'log': log, 'split': 'ts', 'rmsle': r_ts})
+
+    return pd.DataFrame(rows)

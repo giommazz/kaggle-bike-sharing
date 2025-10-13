@@ -49,38 +49,6 @@ def make_timeseries_split(n_splits=5, test_size=30, *, lags=None, rolls=None):
     gap = int(max(max_lag, max_roll))
     return TimeSeriesSplit(n_splits=n_splits, test_size=test_size, gap=gap)
 
-class First19DaysTrainSplit(BaseCrossValidator):
-    """
-    Single split based on calendar day-of-month:
-    - Train indices: all rows where day-of-month in [1...19] across all months/years
-    - Test indices:  all rows where day-of-month in [20...end] across all months/years
-
-    Assumptions:
-    - `X` (and optionally `y`) are indexed by a `pd.DatetimeIndex` at hourly or daily granularity.
-    - Order of rows follows time increasing (not strictly required for index selection here).
-
-    Notes:
-    - Works for hourly data: uses `index.day` to derive day-of-month for each timestamp.
-    - This split intentionally mixes months (not a walk-forward split); use for diagnostic/ablation only (is leaky).
-    """
-
-    def get_n_splits(self, X=None, y=None, groups=None):
-        return 1
-
-    def split(self, X, y=None, groups=None):
-        # Require a DatetimeIndex to compute day-of-month robustly
-        if not hasattr(X, 'index') or not isinstance(X.index, pd.DatetimeIndex):
-            raise ValueError("First19DaysTrainSplit requires X.index to be a pd.DatetimeIndex.")
-
-        # Day-of-month for each row (1...31 depending on month)
-        dom = X.index.day
-
-        # Train: days 1..19; Test: days 20..end (vectorized boolean masks)
-        train_idx = np.where(dom <= 19)[0]
-        test_idx  = np.where(dom >= 20)[0]
-
-        yield train_idx, test_idx
-
 class Last30DaysSplit(BaseCrossValidator):
     """
     Single split: train on rows [0 ... N-31], test on rows [N-30 ... N-1].

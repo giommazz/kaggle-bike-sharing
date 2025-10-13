@@ -54,7 +54,7 @@ Reasons:
 
 ### About Pipelines
 I used sklearn's Pipelines, and called `Pipeline` objects in my `eval_pipeline` to:
-- perform a train/test split $\to$ see `make_timeseries_split`, `First19DaysTrainSplit` and `Last30DaysSplit` (all avoid data leakage while training)
+- perform a train/test split $\to$ see `make_timeseries_split` and `Last30DaysSplit` (both avoid data leakage while training)
 - perform feature engineering and target transformation $\to$ see `BikeFeatureEngineer`. In particular, `BikeFeatureEngineer`:
     - drops highly correlated features
     - computes one-hot encodings
@@ -77,3 +77,13 @@ I used sklearn's Pipelines, and called `Pipeline` objects in my `eval_pipeline` 
 - **autoregressive features**: could be useful but to be verified with larger dataset
 
 
+## Potential improvements
+- Hyperparameter tuning of the RF
+- Add more features:
+  - autoregressive: rolling mean instead of median, or as well as rolling median; lag-based feature, not only computed from `cnt` but also from `casual` and `registered`(if not heavily correlated with `cnt`)
+  - weather: "pleasant_weather", for example if temp > 0.5 and hum < 0.6. For this, I would read in detail the paper that created the UCI dataset, plus articles on how weather and bike rental forecasts are related, etc.
+- Explore feature importance
+- Try new models
+  - Gradient-boosted trees: they keep learning from the errors of previous trees, thus reducing bias and capturing subtler patterns than an RF, which just averages many independent trees
+  - Time-series specific (maybe, if not even GBT works?): something like Prophet? Would need further exploration...
+- The dataset is very tiny so the model might not be learning a lot: try retraining after gathering more data
