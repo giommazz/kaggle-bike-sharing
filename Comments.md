@@ -14,7 +14,7 @@ Cons:
 
 
 ## Outlier detection
-- the `iqr_mask()` function could be computed with Pandas' `quantile([0.25, 0.75])` as well
+- the `tukey_outliers()` function could be computed with Pandas' `quantile([0.25, 0.75])` as well
 - the only column with a seemingly weird value seems to be `hum`, with a row being `0.0`: Washington is rearely so dry. Outlier flag!
 
 

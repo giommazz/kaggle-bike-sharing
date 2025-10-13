@@ -29,7 +29,7 @@ from pathlib import Path
 FIGDIR = Path.cwd() / "plots_hour" # save all figures under ./plots
 FIGDIR.mkdir(parents=True, exist_ok=True) # create the folder if missing
 from utils import savefig_pdf
-from eda_utils import iqr_mask
+from eda_utils import tukey_outliers
 from ml_utils import make_timeseries_split, make_no_fe_preprocess, Last30DaysSplit
 from model_eval import evaluate_pipeline, ar_baseline_scores
 from stat_analysis import diagnose_multicollinearity
@@ -44,7 +44,7 @@ from stat_analysis import diagnose_multicollinearity
 hour_df = pd.read_csv('data/hour.csv')
 print(f"Hourly dataset: {hour_df.shape[0]} rows x {hour_df.shape[1]} cols")
 print(f"Its columns are {hour_df.columns.values}")
-print(f"Raw data:\n{hour_df.head(2)}\n")
+print(f"Raw data (head):\n{hour_df.head(2)}\n")
 
 ##########################################
 # Clean data: handle missing values, set DateTime index, drop leaky columns
@@ -55,7 +55,7 @@ hour_df['timestamp'] = pd.to_datetime(hour_df['dteday']) + pd.to_timedelta(hour_
 hour_df = hour_df.set_index('timestamp').sort_index() # set as DataFrame index
 # Drop 'instant' (just an ID), 'dteday' (now redundant), 'casual' and 'registered' (risk of target leakage)
 hour_df = hour_df.drop(columns=['instant', 'dteday', 'casual', 'registered'])
-print(f'Columns after dropping uninformative and leaky ones: {hour_df.columns}')
+print(f'{len(hour_df.columns)} columns after dropping uninformative and leaky ones (\'instant\', \'dteday\', \'casual\', \'registered\'): {hour_df.columns}')
 print()
 # Statistics
 pd.set_option("display.max_columns", None) # show all columns
@@ -64,13 +64,12 @@ print()
 
 ##########################################
 # Outlier detection `humidity` column
-iqr_mask(hour_df['hum'], 25, 75, 1.5, label="hum")
+tukey_outliers(hour_df['hum'], 25, 75, 1.5, label="hum")
 # Replace impossible humidity zeros using previous/next hour.
-outlier_humidity_mask = hour_df['hum'] == 0  # mask to flag implausible 0.0 humidity
-hour_df.loc[outlier_humidity_mask, 'hum'] = np.nan  # set to NaN to mark as missing
+hour_df.loc[hour_df['hum'] == 0, 'hum'] = np.nan # set implausible 0.0 humidity as NaN to flag
 # - `ffill()`: carry forward the last valid value in time (previous hour)
 # - `bfill()`: use the next valid value in time (next hour) if needed
-hour_df['hum'] = hour_df['hum'].ffill().bfill() # fill from previous hour, else from next hour
+hour_df['hum'] = hour_df['hum'].ffill().bfill() # fill NaNs using previous hour data, else next hour data
 print()
 
 
@@ -119,15 +118,14 @@ savefig_pdf("fig_hist_log_cnt", FIGDIR)
 
 ##########################################
 # Outlier detection and elimination: day granularity (all hours in each day)
-iqr_mask(daily_cnt, 25, 75, 1.5, label="daily cnt") # standard Tukey's outlier range
-iqr_mask(daily_cnt, 25, 75, 1.0, label="daily cnt") # narrower range -> more outliers detected
+tukey_outliers(daily_cnt, 25, 75, 2.0, label="daily cnt") # standard Tukey's outlier range
 print()
 ##########################################
 # Outlier detection and elimination: hour granularity (all days in each hour, 1am, 2am, ..., 12am)
 # -> makes sense because, e.g., 3AM demand should be very different from 6PM demand
 hour_masks = []
 for hour, hour_group in hour_df.groupby('hr'):
-    mask = iqr_mask(hour_group['cnt'], 25, 75, 2 ,label=f'hr={hour}') # `coeff=2` more permissive -> fewer outliers, no overflagging
+    mask = tukey_outliers(hour_group['cnt'], 25, 75, 1.5 ,label=f'hr={hour}') # `coeff=2` more permissive -> fewer outliers, no overflagging
     # Wrap mask in a Bool Series aligned with group's index -> can later merge masks across groups and preserve timestamps
     hour_masks.append(pd.Series(mask, index=hour_group.index))
 # Concatenate all per-hour masks into one, `reindex` to align with og DataFrame `hour_df` (no lost rows)
@@ -327,8 +325,8 @@ preprocess, to_df, feat_cols = make_no_fe_preprocess(X, target_col='cnt')
 ##########################################
 # Instantiate splitters
 cv_last30 = Last30DaysSplit()
-hourly_ar_lags = [1, 24, 168]
-hourly_ar_rolls = [24, 168]
+hourly_ar_lags = [1, 24]#, 168]
+hourly_ar_rolls = [24]#,168]
 cv_ts_ar  = make_timeseries_split(n_splits=5, test_size=30, lags=hourly_ar_lags, rolls=hourly_ar_rolls)
 cv_ts_no  = make_timeseries_split(n_splits=5, test_size=30)
 
@@ -347,7 +345,7 @@ print()
 ##########################################
 # Our base regressors
 # Models are referenced by key in `models` list below; actual estimators are built inside `evaluate_pipeline`.
-models = ["rf", "hgbr", "gbr", "xgb", "cbr", "lgbm"]
+models = ["lgbm"] #["rf", "hgbr", "gbr", "xgb", "cbr", "lgbm"]
 
 
 

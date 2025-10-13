@@ -49,7 +49,7 @@ from pathlib import Path
 FIGDIR = Path.cwd() / "plots" # save all figures under ./plots
 FIGDIR.mkdir(parents=True, exist_ok=True) # create the folder if missing
 from utils import savefig_pdf
-from eda_utils import iqr_mask
+from eda_utils import tukey_outliers
 from ml_utils import make_timeseries_split, Last30DaysSplit, make_no_fe_preprocess
 from model_eval import evaluate_pipeline, ar_baseline_scores
 from stat_analysis import diagnose_multicollinearity
@@ -102,7 +102,7 @@ print(day_df.describe())
 print()
 
 """### Remarks about the cell below
-- the `iqr_mask()` function could be computed with Pandas' `quantile([0.25, 0.75])` as well
+- the `tukey_outliers()` function could be computed with Pandas' `quantile([0.25, 0.75])` as well
 - the only column with a seemingly weird value seems to be `hum`, with a row being `0.0`: Washington is rearely so dry. Outlier flag!
 
 """
@@ -110,7 +110,7 @@ print()
 ##########################################
 # 2.1.4) Outlier detection
 print()
-iqr_mask(day_df['hum'], 25, 75, 1.5)
+tukey_outliers(day_df['hum'], 25, 75, 1.5)
 # Replace outlier with humidity value from previous day
 outlier_humidity_mask = day_df['hum'] == 0
 day_df.loc[outlier_humidity_mask, 'hum'] = day_df['hum'].shift(1)[outlier_humidity_mask]
@@ -165,9 +165,7 @@ savefig_pdf("fig_hist_log_cnt", FIGDIR)
 ##########################################
 # 2.2.4) Outlier detection and elimination
 # traditional outlier range
-iqr_mask(day_df['cnt'], 25, 75, 1.5)
-# loosened outlier range
-iqr_mask(day_df['cnt'], 25, 75, 1.0)
+tukey_outliers(day_df['cnt'], 25, 75, 1.5)
 
 """### Remarks about the cell below
 It doesn't look like `weekday` should have a large predictive power, as a feature. Later, I tried removing it and training RFs without it. Since it improves the error, although very marginally, I decided to keep it

@@ -100,26 +100,37 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
     - Provide `ar_lags` and/or `ar_rolls` (lists of steps). If both None/empty -> no AR features added.
 
     Returns a `DataFrame` with preserved column names.
+    
+    Sklearn compliance:
+    - __init__ only stores parameters as provided (no mutation), so the estimator is clone-safe.
+    - learned attributes are created in `fit` and suffixed with `_`.
     """
     def __init__(self, ar_lags=None, ar_rolls=None):
-        self.ohe = onehot_no_sparse() # Set up a `OneHotEncoder`
-        self.weather_cols_ = ['weathersit'] # Stores column to OH encode
-        self.ar_lags = None if ar_lags is None else list(ar_lags)
-        self.ar_rolls = None if ar_rolls is None else list(ar_rolls)
+        # store params as-is; do not convert to list here (clone-safety)
+        self.ar_lags = ar_lags
+        self.ar_rolls = ar_rolls
 
     # Use only training data, nothing to learn except one-hot encoder
     def fit(self, X, y=None):
-        X_ = X.copy() # Don't alter og data
-        self.ohe.fit(X_[self.weather_cols_]) # learn OHE variable mapping
-        self.cnt_median_ = X_['cnt'].median() # compute median of `cnt` from training data for use in `fillna()` (see below)
-        # Timestamp marker to tell train/test apart: in `transform`, it checks if batch you're transforming is entirely after training (==test/holdout), to decide how to build AR features.
-        self._last_seen_train_time_ = X_.index.max() # Store last timestamp seen in training (`DatetimeIndex` value)
-        # Determine carry length from configured windows (in steps)
-        max_lag = max(self.ar_lags) if self.ar_lags else 0
-        max_roll = max(self.ar_rolls) if self.ar_rolls else 0
+        X_ = X.copy()
+        # encoder learned on train; stored with trailing underscore
+        self.weather_cols_ = ['weathersit']
+        self.ohe_ = onehot_no_sparse()
+        self.ohe_.fit(X_[self.weather_cols_])
+        # train-only stats/state for AR features and transforms
+        self.cnt_median_ = X_['cnt'].median()
+        self._last_seen_train_time_ = X_.index.max()
+        # determine max AR dependency window length
+        lags = list(self.ar_lags) if self.ar_lags is not None else []
+        rolls = list(self.ar_rolls) if self.ar_rolls is not None else []
+        max_lag = max(lags) if lags else 0
+        max_roll = max(rolls) if rolls else 0
         self._max_ar_window_ = int(max(max_lag, max_roll))
-        # `carry`: last `cnt` values from train to compute test-time AR features (provides initial history without using test labels)
-        self._carry_ = X_['cnt'].tail(self._max_ar_window_).to_numpy() if self._max_ar_window_ > 0 else np.array([], dtype=float)
+        # carry last `cnt` values from train to bootstrap test-time AR features
+        self._carry_ = (
+            X_['cnt'].tail(self._max_ar_window_).to_numpy()
+            if self._max_ar_window_ > 0 else np.array([], dtype=float)
+        )
         return self
 
     # Feature engineering
@@ -131,10 +142,10 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
             X_ = X_.drop(columns='atemp')
 
         # 2) One-hot encode weather
-        weather_ohe = self.ohe.transform(X_[self.weather_cols_])
+        weather_ohe = self.ohe_.transform(X_[self.weather_cols_])
         X_.drop(columns=self.weather_cols_, inplace=True) # Drop og column, not needed anymore
         # Fetch colnames that the fitted OHE will output for the encoded weather feature
-        X_[self.ohe.get_feature_names_out(self.weather_cols_)] = weather_ohe # add one-hot matrix to `X_`
+        X_[self.ohe_.get_feature_names_out(self.weather_cols_)] = weather_ohe # add one-hot matrix to `X_`
 
         # 3) Cyclic calendar features
         X_['mnth_sin'] = np.sin(2*np.pi*X_['mnth'] / 12)
@@ -149,8 +160,9 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
         X_.drop(columns=['mnth', 'season', 'weekday', 'hr'], inplace=True, errors='ignore')
 
         # 4) Autoregressive features (optional)
-        want_ar = (self.ar_lags is not None and len(self.ar_lags) > 0)\
-            or (self.ar_rolls is not None and len(self.ar_rolls) > 0)
+        lags = list(self.ar_lags) if self.ar_lags is not None else []
+        rolls = list(self.ar_rolls) if self.ar_rolls is not None else []
+        want_ar = (len(lags) > 0) or (len(rolls) > 0)
         if want_ar:
             # Set `use_carry=True` if processing test data (all indices after `_last_seen_train_time_`)
             use_carry = X.index.min() > self._last_seen_train_time_

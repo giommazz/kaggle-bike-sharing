@@ -27,15 +27,15 @@ def make_model(name: str) -> Any:
         return RandomForestRegressor(
             n_estimators=50,
             min_samples_leaf=2,
-            criterion='friedman_mse',
+            criterion='squared_error',# 'friedman_mse', 'poisson'
             random_state=42,
         )
     if name == "hgbr":
         from sklearn.ensemble import HistGradientBoostingRegressor
         return HistGradientBoostingRegressor(
             loss="poisson", # good for counts, emphasizes relative errors
-            learning_rate=0.05,
-            max_iter=500,
+            learning_rate=0.075,
+            max_iter=750,
             early_stopping=True,
             random_state=42,
         )
@@ -49,7 +49,7 @@ def make_model(name: str) -> Any:
             max_depth=3,
             random_state=42,
         )
-    if name == "xgb":
+    if name == "xgb": # Raw: objective='count:poisson', n_estimators=400–800, learning_rate=0.05, max_depth=4–6, subsample=0.7–0.8, colsample_bytree=0.7–0.8, min_child_weight=1–5, reg_lambda=0–1
         from xgboost import XGBRegressor
         return XGBRegressor(
             n_estimators=500,
@@ -57,22 +57,22 @@ def make_model(name: str) -> Any:
             max_depth=6,
             subsample=0.8,
             colsample_bytree=0.8,
-            objective='reg:squarederror',
+            objective='count:poisson', #'reg:squarederror',
             tree_method='hist',
             random_state=42,
             n_jobs=-1,
         )
-    if name == "cbr":
+    if name == "cbr": # Raw: loss_function='Poisson' (for counts), iterations=600–800, learning_rate=0.05–0.1, depth=6–8, l2_leaf_reg=3–10.
         from catboost import CatBoostRegressor
         return CatBoostRegressor(
             iterations=800,
             learning_rate=0.05,
             depth=6,
-            loss_function='RMSE',
+            loss_function='Poisson',#'RMSE',
             random_seed=42,
             verbose=False,
         )
-    if name == "lgbm":
+    if name == "lgbm": # Raw: objective='poisson' (or 'tweedie' with tweedie_variance_power≈1.3–1.5), n_estimators=600–1000, learning_rate=0.05–0.1, num_leaves=31–63, min_child_samples=5–20, subsample=0.7–0.9, colsample_bytree=0.7–0.9.
         from lightgbm import LGBMRegressor
         return LGBMRegressor(
             n_estimators=800,
@@ -82,7 +82,7 @@ def make_model(name: str) -> Any:
             max_depth=-1,
             subsample=0.8,
             colsample_bytree=0.8,
-            objective='rmse',
+            objective='rmse', # 'rmse', 'poisson', 'tweedie'
             force_col_wise=True, # remove col/row test overhead message
             verbosity=-1, # silence LightGBM logs
             random_state=42,

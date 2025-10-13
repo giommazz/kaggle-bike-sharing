@@ -20,7 +20,68 @@ def _evaluate_no_ar(pipe, X, y, cv, scorer=rmsle_scorer):
     return float(-scores.mean())  # scorer is negative RMSLE
 
 
-def _evaluate_ar_walkforward(pipe, X, y, cv, rmsle_func=_rmsle):
+def _rmsle_safe(y_true, y_pred):
+    """
+    Compute RMSLE, returning NaN if predictions violate MSLE domain.
+    Useful to avoid hard crashes when diagnosing negative predictions.
+    """
+    try:
+        return float(_rmsle(y_true, y_pred))
+    except ValueError:
+        return float('nan')
+
+
+def _evaluate_no_ar_diag(pipe, X, y, cv, *, print_ctx: str | None = None):
+    """
+    Manual CV for non-AR pipelines to collect diagnostics on negative predictions.
+
+    Prints counts/ratios of negative preds and preds <= -1 (invalid for MSLE).
+    Returns mean RMSLE across folds (NaN if all folds invalid).
+    """
+    rmsles = []
+    total_preds = 0
+    neg_preds = 0
+    invalid_preds = 0
+    small_neg_preds = 0  # in (-1, 0)
+    neg_values = []      # collect negative prediction values for magnitude stats
+    for tr_idx, te_idx in cv.split(X):
+        X_tr, y_tr = X.iloc[tr_idx], y.iloc[tr_idx]
+        X_te, y_te = X.iloc[te_idx], y.iloc[te_idx]
+        est = clone(pipe).fit(X_tr, y_tr)
+        y_hat = est.predict(X_te)
+        total_preds += len(y_hat)
+        neg_mask = (y_hat < 0)
+        inv_mask = (y_hat <= -1)
+        small_mask = (y_hat < 0) & (y_hat > -1)
+        neg_preds += int(neg_mask.sum())
+        invalid_preds += int(inv_mask.sum())
+        small_neg_preds += int(small_mask.sum())
+        if np.any(neg_mask):
+            neg_values.extend(list(np.asarray(y_hat)[neg_mask]))
+        rmsles.append(_rmsle_safe(y_te, y_hat))
+
+    if total_preds > 0:
+        neg_pct = neg_preds / total_preds
+        inv_pct = invalid_preds / total_preds
+        ctx = f" [{print_ctx}]" if print_ctx else ""
+        line = f"Negatives{ctx}: {neg_preds}/{total_preds} ({neg_pct:.2%}); <=-1: {invalid_preds} ({inv_pct:.2%})"
+        if neg_preds > 0:
+            near_zero_ratio = small_neg_preds / neg_preds
+            line += f"; (-1,0): {small_neg_preds} ({near_zero_ratio:.2%} of negatives)"
+        print(line)
+        if neg_values:
+            neg_arr = np.array(neg_values, dtype=float)
+            pcts = np.percentile(neg_arr, [0, 5, 25, 50, 75, 95])
+            print(
+                "  Negatives summary (min,p5,p25,median,p75,p95): "
+                f"{pcts[0]:.3f}, {pcts[1]:.3f}, {pcts[2]:.3f}, {pcts[3]:.3f}, {pcts[4]:.3f}, {pcts[5]:.3f}"
+            )
+    # average ignoring NaNs
+    valid = [r for r in rmsles if r == r]
+    return float(np.mean(valid)) if valid else float('nan')
+
+
+def _evaluate_ar_walkforward(pipe, X, y, cv, rmsle_func=_rmsle, *, print_ctx: str | None = None):
     """
     Helper: Walk-forward evaluation for pipelines with AR features.
 
@@ -29,6 +90,11 @@ def _evaluate_ar_walkforward(pipe, X, y, cv, rmsle_func=_rmsle):
     Returns mean RMSLE across splits.
     """
     scores = []
+    total_preds_global = 0
+    neg_preds_global = 0
+    invalid_preds_global = 0
+    small_neg_preds_global = 0
+    neg_values = []
     for tr_idx, te_idx in cv.split(X):
         X_tr, y_tr = X.iloc[tr_idx], y.iloc[tr_idx]
         X_te, y_te = X.iloc[te_idx], y.iloc[te_idx]
@@ -54,8 +120,35 @@ def _evaluate_ar_walkforward(pipe, X, y, cv, rmsle_func=_rmsle):
             y_hat = model.predict(last_row_features).item()
             preds.append(float(y_hat))
 
-        scores.append(rmsle_func(y_te, pd.Series(preds, index=y_te.index)))
-    return float(np.mean(scores))
+        preds_arr = np.array(preds, dtype=float)
+        total_preds_global += preds_arr.size
+        neg_mask = preds_arr < 0
+        inv_mask = preds_arr <= -1
+        small_mask = (preds_arr < 0) & (preds_arr > -1)
+        neg_preds_global += int(neg_mask.sum())
+        invalid_preds_global += int(inv_mask.sum())
+        small_neg_preds_global += int(small_mask.sum())
+        if np.any(neg_mask):
+            neg_values.extend(list(preds_arr[neg_mask]))
+        scores.append(_rmsle_safe(y_te, pd.Series(preds_arr, index=y_te.index)))
+    if total_preds_global > 0:
+        neg_pct = neg_preds_global / total_preds_global
+        inv_pct = invalid_preds_global / total_preds_global
+        ctx = f" [{print_ctx}]" if print_ctx else ""
+        line = f"Negatives{ctx}: {neg_preds_global}/{total_preds_global} ({neg_pct:.2%}); <=-1: {invalid_preds_global} ({inv_pct:.2%})"
+        if neg_preds_global > 0:
+            near_zero_ratio = small_neg_preds_global / neg_preds_global
+            line += f"; (-1,0): {small_neg_preds_global} ({near_zero_ratio:.2%} of negatives)"
+        print(line)
+        if neg_values:
+            neg_arr = np.array(neg_values, dtype=float)
+            pcts = np.percentile(neg_arr, [0, 5, 25, 50, 75, 95])
+            print(
+                "  Negatives summary (min,p5,p25,median,p75,p95): "
+                f"{pcts[0]:.3f}, {pcts[1]:.3f}, {pcts[2]:.3f}, {pcts[3]:.3f}, {pcts[4]:.3f}, {pcts[5]:.3f}"
+            )
+    valid = [s for s in scores if s == s]
+    return float(np.mean(valid)) if valid else float('nan')
 
 
 def ar_baseline_scores(y, splitter, *, lags=None, rolls=None, rmsle_func=_rmsle):
@@ -174,7 +267,8 @@ def evaluate_pipeline(models,
                       to_df=None,
                       ar_lags=None,
                       ar_rolls=None,
-                      logs=(False, True)) -> pd.DataFrame:
+                      logs=(False, True),
+                      diagnose_negatives: bool = True) -> pd.DataFrame:
     """
     Orchestrate evaluation over a suite of models and log-transform settings.
 
@@ -186,10 +280,8 @@ def evaluate_pipeline(models,
     """
     rows = []
     if fe_mode == 'fe_ar':
-        eval_fn = _evaluate_ar_walkforward
         ts_cv = cv_ts_ar
     else:
-        eval_fn = _evaluate_no_ar
         ts_cv = cv_ts_no
 
     for key in models:
@@ -203,8 +295,28 @@ def evaluate_pipeline(models,
                 ar_lags=ar_lags,
                 ar_rolls=ar_rolls,
             )
-            r_last30 = eval_fn(pipe, X, y, cv_last30)
-            r_ts = eval_fn(pipe, X, y, ts_cv)
+            if fe_mode == 'fe_ar':
+                r_last30 = _evaluate_ar_walkforward(
+                    pipe, X, y, cv_last30,
+                    print_ctx=f"{key} {fe_mode} log={log} split=last30" if diagnose_negatives else None,
+                )
+                r_ts = _evaluate_ar_walkforward(
+                    pipe, X, y, ts_cv,
+                    print_ctx=f"{key} {fe_mode} log={log} split=ts" if diagnose_negatives else None,
+                )
+            else:
+                if diagnose_negatives:
+                    r_last30 = _evaluate_no_ar_diag(
+                        pipe, X, y, cv_last30,
+                        print_ctx=f"{key} {fe_mode} log={log} split=last30",
+                    )
+                    r_ts = _evaluate_no_ar_diag(
+                        pipe, X, y, ts_cv,
+                        print_ctx=f"{key} {fe_mode} log={log} split=ts",
+                    )
+                else:
+                    r_last30 = _evaluate_no_ar(pipe, X, y, cv_last30)
+                    r_ts = _evaluate_no_ar(pipe, X, y, ts_cv)
             rows.append({'model': key, 'fe_mode': fe_mode, 'log': log, 'split': 'last30', 'rmsle': r_last30})
             rows.append({'model': key, 'fe_mode': fe_mode, 'log': log, 'split': 'ts', 'rmsle': r_ts})
 
