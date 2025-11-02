@@ -31,9 +31,9 @@ def _rmsle_safe(y_true, y_pred):
         return float('nan')
 
 
-def _evaluate_no_ar_diag(pipe, X, y, cv, *, print_ctx: str | None = None):
+def _evaluate_no_ar_diagnosis(pipe, X, y, cv, *, print_ctx: str | None = None):
     """
-    Manual CV for non-AR pipelines to collect diagnostics on negative predictions.
+    Manual CV for ML/based pipelines to collect diagnostics on negative predictions.
 
     Prints counts/ratios of negative preds and preds <= -1 (invalid for MSLE).
     Returns mean RMSLE across folds (NaN if all folds invalid).
@@ -42,8 +42,8 @@ def _evaluate_no_ar_diag(pipe, X, y, cv, *, print_ctx: str | None = None):
     total_preds = 0
     neg_preds = 0
     invalid_preds = 0
-    small_neg_preds = 0  # in (-1, 0)
-    neg_values = []      # collect negative prediction values for magnitude stats
+    small_neg_preds = 0 # in (-1, 0)
+    neg_values = [] # collect negative prediction values for magnitude stats
     for tr_idx, te_idx in cv.split(X):
         X_tr, y_tr = X.iloc[tr_idx], y.iloc[tr_idx]
         X_te, y_te = X.iloc[te_idx], y.iloc[te_idx]
@@ -64,17 +64,17 @@ def _evaluate_no_ar_diag(pipe, X, y, cv, *, print_ctx: str | None = None):
         neg_pct = neg_preds / total_preds
         inv_pct = invalid_preds / total_preds
         ctx = f" [{print_ctx}]" if print_ctx else ""
-        line = f"Negatives{ctx}: {neg_preds}/{total_preds} ({neg_pct:.2%}); <=-1: {invalid_preds} ({inv_pct:.2%})"
+        line = f"Negative predictions{ctx}: {neg_preds}/{total_preds} ({neg_pct:.2%}); <=-1: {invalid_preds} ({inv_pct:.2%})"
         if neg_preds > 0:
             near_zero_ratio = small_neg_preds / neg_preds
             line += f"; (-1,0): {small_neg_preds} ({near_zero_ratio:.2%} of negatives)"
         print(line)
         if neg_values:
             neg_arr = np.array(neg_values, dtype=float)
-            pcts = np.percentile(neg_arr, [0, 5, 25, 50, 75, 95])
+            pcts = np.percentile(neg_arr, [0, 50, 95])
             print(
-                "  Negatives summary (min,p5,p25,median,p75,p95): "
-                f"{pcts[0]:.3f}, {pcts[1]:.3f}, {pcts[2]:.3f}, {pcts[3]:.3f}, {pcts[4]:.3f}, {pcts[5]:.3f}"
+                "  Negatives summary (min,median,p95): "
+                f"{pcts[0]:.3f}, {pcts[1]:.3f}, {pcts[2]:.3f}"
             )
     # average ignoring NaNs
     valid = [r for r in rmsles if r == r]
@@ -306,11 +306,11 @@ def evaluate_pipeline(models,
                 )
             else:
                 if diagnose_negatives:
-                    r_last30 = _evaluate_no_ar_diag(
+                    r_last30 = _evaluate_no_ar_diagnosis(
                         pipe, X, y, cv_last30,
                         print_ctx=f"{key} {fe_mode} log={log} split=last30",
                     )
-                    r_ts = _evaluate_no_ar_diag(
+                    r_ts = _evaluate_no_ar_diagnosis(
                         pipe, X, y, ts_cv,
                         print_ctx=f"{key} {fe_mode} log={log} split=ts",
                     )

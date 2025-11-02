@@ -287,7 +287,6 @@ savefig_pdf("fig_coverage_ecdf", FIGDIR)
 ##########################################
 # CORRELATION MATRIX
 ##########################################
-print(hour_df.columns)
 # Include `hr` (hour-of-day) and any engineered flags (e.g., hourly outlier column)
 corr_cols = ['season', 'yr', 'mnth', 'hr', 'holiday', 'weekday', 'workingday',
              'weathersit', 'temp', 'atemp', 'hum', 'windspeed']
@@ -345,7 +344,7 @@ print()
 ##########################################
 # Our base regressors
 # Models are referenced by key in `models` list below; actual estimators are built inside `evaluate_pipeline`.
-models = ["lgbm"] #["rf", "hgbr", "gbr", "xgb", "cbr", "lgbm"]
+models = ["xgb"] #["rf", "hgbr", "gbr", "xgb", "cbr", "lgbm"]
 
 
 
@@ -354,6 +353,7 @@ models = ["lgbm"] #["rf", "hgbr", "gbr", "xgb", "cbr", "lgbm"]
 ##########################################
 # MODEL EVALUATION
 ##########################################
+
 # No FE (passthrough)
 results_no_fe = evaluate_pipeline(
     models,
@@ -365,8 +365,9 @@ results_no_fe = evaluate_pipeline(
     preprocess=preprocess,
     to_df=to_df,
 )
-print("\n=== Evaluation: no FE ===")
+print("=== Evaluation: no FE ===")
 print(results_no_fe.sort_values(["split", "model", "log"]).to_string(index=False))
+print()
 
 # FE, no AR
 results_fe = evaluate_pipeline(
@@ -377,8 +378,9 @@ results_fe = evaluate_pipeline(
     cv_ts_no=cv_ts_no,
     cv_ts_ar=cv_ts_ar,
 )
-print("\n=== Evaluation: FE (no AR) ===")
+print("=== Evaluation: FE (no AR) ===")
 print(results_fe.sort_values(["split", "model", "log"]).to_string(index=False))
+print()
 
 # FE + AR (walk-forward pipeline evaluation)
 results_fe_ar = evaluate_pipeline(
@@ -391,15 +393,15 @@ results_fe_ar = evaluate_pipeline(
     ar_lags=hourly_ar_lags,
     ar_rolls=hourly_ar_rolls,
 )
-print("\n=== Evaluation: FE + AR ===")
+print("=== Evaluation: FE + AR ===")
 print(results_fe_ar.sort_values(["split", "model", "log"]).to_string(index=False))
-
+print()
 
 
 
 
 ##########################################
-# 3.2.10) Diagnostics: multicollinearity on engineered features (TRAIN ONLY)
+# DIAGNOSTICS: MULTICOLLINEARITY ON ENGINEERED FEATURES (TRAIN ONLY)
 ##########################################
 # Why train-only: avoid peeking at the test distribution and keep diagnostics fold-consistent.
 
