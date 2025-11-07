@@ -3,12 +3,19 @@ Model factory helpers.
 
 Provides a single `make_model()` function that returns a preconfigured regressor by name.
 Uses lazy imports so optional dependencies (xgboost, catboost, lightgbm) are only imported when requested
+
+Seeding: override the global default by setting env var `MODEL_SEED`, or
+pass `seed=` to `make_model()` for one-off experiments.
 """
 
+import os
 from typing import Any
 
+# Global default seed (env override: MODEL_SEED)
+SEED = int(os.getenv("MODEL_SEED", "5674381"))
 
-def make_model(name: str) -> Any:
+
+def make_model(name: str, seed: int | None = None) -> Any:
     """
     Return a preconfigured regressor by name.
 
@@ -21,14 +28,15 @@ def make_model(name: str) -> Any:
     - 'lgbm' : LightGBM `LGBMRegressor` (optional dependency)
     """
     name = name.lower()
+    seed = SEED if seed is None else int(seed)
 
     if name == "rf":
         from sklearn.ensemble import RandomForestRegressor
         return RandomForestRegressor(
-            n_estimators=0,
+            n_estimators=50,
             min_samples_leaf=2,
             criterion='squared_error', # 'squared_error', 'friedman_mse', 'poisson'
-            random_state=42,
+            random_state=seed,
         )
     if name == "hgbr":
         from sklearn.ensemble import HistGradientBoostingRegressor
@@ -37,7 +45,7 @@ def make_model(name: str) -> Any:
             learning_rate=0.075,
             max_iter=750,
             early_stopping=True,
-            random_state=42,
+            random_state=seed,
         )
     if name == "gbr":
         from sklearn.ensemble import GradientBoostingRegressor
@@ -47,7 +55,7 @@ def make_model(name: str) -> Any:
             learning_rate=0.05,
             n_estimators=50,
             max_depth=3,
-            random_state=42,
+            random_state=seed,
         )
     if name == "xgb":
         from xgboost import XGBRegressor
@@ -59,7 +67,7 @@ def make_model(name: str) -> Any:
             colsample_bytree=0.8,
             objective='reg:tweedie', #'reg:squarederror', 'count:poisson', 'reg:tweedie'
             tree_method='hist',
-            random_state=42,
+            random_state=seed,
             n_jobs=-1,
         )
     if name == "cbr":
@@ -69,7 +77,7 @@ def make_model(name: str) -> Any:
             learning_rate=0.05,
             depth=6,
             loss_function='RMSE',#'RMSE', 'Poisson'
-            random_seed=42,
+            random_seed=seed,
             verbose=False,
         )
     if name == "lgbm":
@@ -85,7 +93,7 @@ def make_model(name: str) -> Any:
             objective='tweedie', # 'rmse', 'poisson', 'tweedie', 'huber
             force_col_wise=True, # remove col/row test overhead message
             verbosity=-1, # silence LightGBM logs
-            random_state=42,
+            random_state=seed,
         )
 
     raise ValueError(f"Unknown model '{name}'")

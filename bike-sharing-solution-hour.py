@@ -344,7 +344,7 @@ print()
 ##########################################
 # Our base regressors
 # Models are referenced by key in `models` list below; actual estimators are built inside `evaluate_pipeline`.
-models = ["xgb"] #["rf", "hgbr", "gbr", "xgb", "cbr", "lgbm"]
+models = ["rf", "cbr", "lgbm"] #["rf", "hgbr", "gbr", "xgb", "cbr", "lgbm"]
 
 
 
