@@ -1,9 +1,13 @@
 Todos
 
 # HIGH PRIORITY
+
 - add hyperparameter tuning
+
 - implement sliding window CV and compare with existing expanding window
 
+- produce plots or summary stats to evaluate chosen methods. Quantify performance variability too
+  
 - Hybrid modelling (ARIMA + residual ML):
   1. (S)ARIMA baseline: $\hat{y}_t := f(y_{1:t-1})$
      (one-step-ahead forecast from past $y$; can capture trend/seasonality via (S)ARIMA)
